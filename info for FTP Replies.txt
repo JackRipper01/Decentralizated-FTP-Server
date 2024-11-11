@@ -1,0 +1,11 @@
+FTP Replies
+Some of the FTP replies are:
+
+200 – Command okay.
+530 – Not logged in.
+331 –  User name okay, need a password.
+221 – Service closing control connection.
+551 – Requested action aborted: page type unknown.
+502 – Command not implemented.
+503 – Bad sequence of commands.
+504 – Command not implemented for that parameter.
