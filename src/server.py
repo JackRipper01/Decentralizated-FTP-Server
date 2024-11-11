@@ -2,6 +2,7 @@ import os
 import socket
 import threading
 import time
+from pathlib import Path
 
 CONTROL_PORT = 21
 BUFFER_SIZE = 1024
@@ -9,12 +10,18 @@ BUFFER_SIZE = 1024
 
 class FTPServer:
     def __init__(self, host='127.0.0.1'):
+        
         self.host = host
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.bind((host, CONTROL_PORT))
         self.server_socket.listen(5)
         print(f"FTP Server listening on {host}:{CONTROL_PORT}")
-        self.current_directory = os.getcwd()
+        self.base_dir= Path(__file__).resolve().parent.parent
+        self.files_dir=self.base_dir.joinpath('./transfered_files')
+        self.in_files_dir=self.base_dir.joinpath('./transfered_files/from_client')
+        self.current_directory = self.in_files_dir
+        
+        print(self.current_directory)
 
     def handle_client(self, client_socket):
         client_socket.send(b"220 Welcome to the FTP server.\r\n")
