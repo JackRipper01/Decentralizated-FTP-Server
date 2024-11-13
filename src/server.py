@@ -68,7 +68,7 @@ class FTPServer:
         client_socket.close()
 
     def handle_pwd(self, client_socket):
-        response = f'257 "{self.current_directory}" is the current directory\r\n'
+        response = f'257 "{self.current_directory}"\r\n'
         client_socket.send(response.encode())
 
     def handle_cwd(self, client_socket, path):
@@ -99,19 +99,28 @@ class FTPServer:
         client_socket.send(b"150 Here comes the directory listing.\r\n")
 
         try:
-            conn, addr = data_socket.accept()
-            files = os.listdir(self.current_directory)
-            for file in files:
-                file_stat = os.stat(os.path.join(self.current_directory, file))
-                file_info = f"{file_stat.st_mode} 1 owner group {file_stat.st_size} {time.strftime('%b %d %H:%M', time.gmtime(file_stat.st_mtime))} {file}\r\n"
-                conn.send(file_info.encode())
-            conn.close()
+            conn, addr = data_socket.accept()  # Accept incoming connection from client
+            # List all entries in current directory
+            entries = os.listdir(self.current_directory)
+            for entry in entries:
+                full_path = os.path.join(self.current_directory, entry)
+                if os.path.isdir(full_path):
+                    # Format for directories
+                    file_info = f'drwxr-xr-x 1 owner group {os.stat(full_path).st_size} {time.strftime("%b %d %H:%M", time.gmtime(os.stat(full_path).st_mtime))} {entry}\r\n'
+                else:
+                    # Format for files
+                    file_info = f'-rw-r--r-- 1 owner group {os.stat(full_path).st_size} {time.strftime("%b %d %H:%M", time.gmtime(os.stat(full_path).st_mtime))} {entry}\r\n'
+
+                conn.send(file_info.encode())  # Send each entry info to client
+
+            conn.close()  # Close data connection after sending all entries
+            # Send completion response
             client_socket.send(b"226 Directory send OK.\r\n")
         except Exception as e:
             print(f"Error in LIST: {e}")
             client_socket.send(b"425 Can't open data connection.\r\n")
         finally:
-            data_socket.close()
+            data_socket.close()  # Ensure data socket is closed
 
     def handle_stor(self, client_socket, data_socket, filename):
         if not data_socket:
@@ -172,3 +181,21 @@ class FTPServer:
 if __name__ == "__main__":
     ftp_server = FTPServer()
     ftp_server.start()
+
+# Status:	Connecting to 127.0.0.1: 21...
+# Status:	Connection established, waiting for welcome message...
+# Response:	220 Welcome to the FTP server.
+# Command:	AUTH TLS
+# Response:	502 Command not implemented.
+# Command:	AUTH SSL
+# Response:	502 Command not implemented.
+# Status:	Insecure server, it does not support FTP over TLS.
+# Command:	USER anonymous
+# Response:	331 User name okay, need password.
+# Command:	PASS ** *******************
+# Response:	230 User logged in , proceed.
+# Command:	OPTS UTF8 ON
+# Response:	502 Command not implemented.
+# Status:	Logged in
+# Status:	Retrieving directory listing...
+# Status:	Directory listing of "C:\Franco\Proyects\JackRipper01\ftp-server\Decentralizated-FTP-Server\transfered_files\from_client" successful
