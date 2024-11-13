@@ -16,10 +16,9 @@ class FTPServer:
         self.server_socket.bind((host, CONTROL_PORT))
         self.server_socket.listen(5)
         print(f"FTP Server listening on {host}:{CONTROL_PORT}")
-        self.base_dir= Path(__file__).resolve().parent.parent
-        self.files_dir=self.base_dir.joinpath('./transfered_files')
-        self.in_files_dir=self.base_dir.joinpath('./transfered_files/from_client')
-        self.current_directory = self.in_files_dir
+        base_dir= Path(__file__).resolve().parent.parent
+        self.resources_dir=base_dir.joinpath('./server_resources')
+        self.current_dir = self.resources_dir
         
         print(self.current_directory)
 
