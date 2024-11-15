@@ -9,8 +9,9 @@ BUFFER_SIZE = 1024
 
 
 class FTPServer:
-    def __init__(self, host='127.0.0.1'):
+    def __init__(self, host='127.0.0.1',dev=True):
         
+        self.dev = True
         self.host = host
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.bind((host, CONTROL_PORT))
@@ -19,8 +20,7 @@ class FTPServer:
         base_dir= Path(__file__).resolve().parent.parent
         self.resources_dir=base_dir.joinpath('./server_resources')
         self.current_dir = self.resources_dir
-        
-        print(self.current_directory)
+        print(self.current_dir)
 
     def handle_client(self, client_socket):
         client_socket.send(b"220 Welcome to the FTP server.\r\n")
@@ -29,7 +29,8 @@ class FTPServer:
             command = client_socket.recv(BUFFER_SIZE).decode().strip()
             if not command:
                 break
-            print(f"Received command: {command}")
+            if command == 'STOR' or command == 'CWD':
+                print(f"Received command: {command}")
             cmd = command.split()[0].upper()
             arg = command[len(cmd):].strip()
 
@@ -67,16 +68,22 @@ class FTPServer:
         client_socket.close()
 
     def handle_pwd(self, client_socket):
-        response = f'257 "{self.current_directory}"\r\n'
+        response = f'257 "{self.current_dir}"\r\n'
         client_socket.send(response.encode())
 
     def handle_cwd(self, client_socket, path):
+        print('CWD:')
+        print(path)
         try:
-            os.chdir(path)
-            self.current_directory = os.getcwd()
-            client_socket.send(b"250 Directory successfully changed.\r\n")
+            if(os.path.commonpath([path,self.resources_dir]) == self.resources_dir):
+                os.chdir(path)
+                self.current_dir = os.getcwd()
+                client_socket.send(b"250 Directory successfully changed.\r\n")
+                print("250 Directory successfully changed.")
         except Exception as e:
+            print('550 Failed to change directory.')
             client_socket.send(b"550 Failed to change directory.\r\n")
+        print('-------------------')
 
     def handle_pasv(self, client_socket):
         data_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -100,9 +107,9 @@ class FTPServer:
         try:
             conn, addr = data_socket.accept()  # Accept incoming connection from client
             # List all entries in current directory
-            entries = os.listdir(self.current_directory)
+            entries = os.listdir(self.current_dir)
             for entry in entries:
-                full_path = os.path.join(self.current_directory, entry)
+                full_path = os.path.join(self.current_dir, entry)
                 if os.path.isdir(full_path):
                     # Format for directories
                     file_info = f'drwxr-xr-x 1 owner group {os.stat(full_path).st_size} {time.strftime("%b %d %H:%M", time.gmtime(os.stat(full_path).st_mtime))} {entry}\r\n'
@@ -121,32 +128,47 @@ class FTPServer:
         finally:
             data_socket.close()  # Ensure data socket is closed
 
-    def handle_stor(self, client_socket, data_socket, filename):
+    def handle_stor(self, client_socket, data_socket, filepath):
         if not data_socket:
             client_socket.send(b"425 Use PASV first.\r\n")
             return
+        if os.path.commonpath([filepath,self.resources_dir]) == self.resources_dir:
+            try:
+                client_socket.send(b"150 Ok to send data.\r\n")
+                conn, addr = data_socket.accept()
+                filename=filepath.split('\\')[-1]
+                with open(filepath, 'wb') as file:
 
-        try:
-            client_socket.send(b"150 Ok to send data.\r\n")
-            conn, addr = data_socket.accept()
-            with open(os.path.join(self.current_directory, filename), 'wb') as file:
-                while True:
-                    data = conn.recv(BUFFER_SIZE)
-                    if not data:
-                        break
-                    file.write(data)
-            conn.close()
-            client_socket.send(b"226 Transfer complete.\r\n")
-        except Exception as e:
-            print(f"Error in STOR: {e}")
+                    print('STOR Command Inspect:')
+                    print(filepath)
+                    print(self.current_dir)
+                    print(filename)
+                    print(os.path.join(self.current_dir, filename))
+                    print('---------------')
+
+                    while True:
+                        data = conn.recv(BUFFER_SIZE)
+                        if not data:
+                            break
+                        file.write(data)
+                conn.close()
+                client_socket.send(b"226 Transfer complete.\r\n")
+            except Exception as e:
+                print(f"Error in STOR: {e}")
+                client_socket.send(b"550 Failed to store file.\r\n")
+                data_socket.close()
+            finally:
+                data_socket.close()
+        else: 
+            print(f"Error in STOR: Trying to store outside of designated server resources.")
             client_socket.send(b"550 Failed to store file.\r\n")
-        finally:
             data_socket.close()
+            
 
     def handle_size(self, client_socket, filename):
         try:
             size = os.path.getsize(os.path.join(
-                self.current_directory, filename))
+                self.current_dir, filename))
             client_socket.send(f"213 {size}\r\n".encode())
         except Exception as e:
             client_socket.send(b"550 Could not get file size.\r\n")
@@ -154,7 +176,7 @@ class FTPServer:
     def handle_mdtm(self, client_socket, filename):
         try:
             mtime = os.path.getmtime(os.path.join(
-                self.current_directory, filename))
+                self.current_dir, filename))
             mtimestr = time.strftime("%Y%m%d%H%M%S", time.gmtime(mtime))
             client_socket.send(f"213 {mtimestr}\r\n".encode())
         except Exception as e:
@@ -163,7 +185,7 @@ class FTPServer:
 
     def handle_mkd(self, client_socket, dirname):
         try:
-            os.mkdir(os.path.join(self.current_directory, dirname))
+            os.mkdir(os.path.join(self.current_dir, dirname))
             client_socket.send(
                 f'257 "{dirname}" directory created\r\n'.encode())
         except Exception as e:

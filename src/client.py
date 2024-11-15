@@ -24,3 +24,10 @@ def run_client():
 
 if __name__ == '__main__':
     run_client()
+
+'''
+TESTS:
+copiar afuera de resources un archivo
+copiar una carpeta(incluir todo el interior)
+'''    
+# Tests:
