@@ -46,6 +46,8 @@ class FTPServer:
                 self.handle_pwd(client_socket)
             elif cmd == "CWD":
                 self.handle_cwd(client_socket, arg)
+            elif cmd == "CDUP":
+                self.handle_cwd(client_socket, self.current_dir.parent)
             elif cmd == "TYPE":
                 client_socket.send(b"200 Type set to I.\r\n")
             elif cmd == "PASV":
