@@ -29,5 +29,6 @@ if __name__ == '__main__':
 TESTS:
 copiar afuera de resources un archivo
 copiar una carpeta(incluir todo el interior)
+forming a folder tree inside of server_resources
 '''    
 # Tests:
