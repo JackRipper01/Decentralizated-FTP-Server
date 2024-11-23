@@ -29,13 +29,14 @@ class FTPServer:
             command = client_socket.recv(BUFFER_SIZE).decode().strip()
             if not command:
                 break
-            if command == 'STOR' or command == 'CWD':
+            if command:
                 print(f"Received command: {command}")
             cmd = command.split()[0].upper()
             arg = command[len(cmd):].strip()
 
             if cmd == "USER":
-                client_socket.send(b"331 User name okay, need password.\r\n")
+                res= self.handle_user(client_socket,arg)
+                client_socket.send(res)
             elif cmd == "PASS":
                 client_socket.send(b"230 User logged in, proceed.\r\n")
             elif cmd == "SYST":
@@ -68,6 +69,9 @@ class FTPServer:
             else:
                 client_socket.send(b"502 Command not implemented.\r\n")
         client_socket.close()
+        
+    def handle_user(self, client_socket, username):
+        return b"331 User name okay, need password.\r\n"
 
     def handle_pwd(self, client_socket):
         response = f'257 "{self.current_dir}"\r\n'
