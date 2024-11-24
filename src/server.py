@@ -28,63 +28,72 @@ class FTPServer:
         self.current_dir = self.resources_dir
         print(self.current_dir)
 
-    def handle_client(self, client_socket):
-        client_socket.send(b"220 Welcome to the FTP server.\r\n")
-        data_socket = None
-        while True:
-            command = client_socket.recv(BUFFER_SIZE).decode().strip()
-            if not command:
-                break
-            print(f"Received command: {command}")
-            cmd = command.split()[0].upper()
-            arg = command[len(cmd):].strip()
 
-            if cmd == "USER":
-                res= self.handle_user(client_socket,arg)
-                client_socket.send(res)
-            elif cmd == "PASS":
-                client_socket.send(b"230 User logged in, proceed.\r\n")
-            elif cmd == "SYST":
-                client_socket.send(b"215 UNIX Type: L8\r\n")
-            elif cmd == "FEAT":
-                client_socket.send(b"211-Features:\r\n UTF8\r\n211 End\r\n")
-            elif cmd == "PWD":
-                self.handle_pwd(client_socket)
-            elif cmd == "CWD":
-                self.handle_cwd(client_socket, arg)
-            elif cmd == "CDUP":
-                self.handle_cwd(client_socket, self.current_dir.parent)
-            elif cmd == "TYPE":
-                client_socket.send(b"200 Type set to I.\r\n")
-            elif cmd == "PASV":
-                data_socket = self.handle_pasv(client_socket)
-            elif cmd == "LIST":
-                self.handle_list(client_socket, data_socket)
-            elif cmd == "STOR":
-                self.handle_stor(client_socket, data_socket, arg)
-            elif cmd == "SIZE":
-                self.handle_size(client_socket, arg)
-            elif cmd == "MDTM":
-                self.handle_mdtm(client_socket, arg)
-            elif cmd == "MKD":
-                self.handle_mkd(client_socket, arg)
-            elif cmd == "RETR":
-                self.handle_retr(client_socket, data_socket, arg)
-            elif cmd == "DELE":
-                self.handle_dele(client_socket, arg)
-            elif cmd == "RMD":
-                self.handle_rmd(client_socket, arg)
-            elif cmd == "RNFR":
-                rename_from = self.handle_rnfr(client_socket, arg)
-            elif cmd == "RNTO":
-                self.handle_rnto(client_socket, rename_from, arg)
-            elif cmd == "QUIT":
-                client_socket.send(b"221 Goodbye.\r\n")
-                break
-            else:
-                client_socket.send(b"502 Command not implemented.\r\n")
-        client_socket.close()
-        
+    def handle_client(self, client_socket):
+        try:
+            client_socket.send(b"220 Welcome to the FTP server.\r\n")
+            data_socket = None
+            while True:
+                try:
+                    command = client_socket.recv(BUFFER_SIZE).decode().strip()
+                    if not command:
+                        break
+                    print(f"Received command: {command}")
+                    cmd = command.split()[0].upper()
+                    arg = command[len(cmd):].strip()
+
+                    if cmd == "USER":
+                        res = self.handle_user(client_socket, arg)
+                        client_socket.send(res)
+                    elif cmd == "PASS":
+                        client_socket.send(b"230 User logged in, proceed.\r\n")
+                    elif cmd == "SYST":
+                        client_socket.send(b"215 UNIX Type: L8\r\n")
+                    elif cmd == "FEAT":
+                        client_socket.send(
+                            b"211-Features:\r\n UTF8\r\n211 End\r\n")
+                    elif cmd == "PWD":
+                        self.handle_pwd(client_socket)
+                    elif cmd == "CWD":
+                        self.handle_cwd(client_socket, arg)
+                    elif cmd == "CDUP":
+                        self.handle_cwd(client_socket, Path(self.current_dir).parent)
+                    elif cmd == "TYPE":
+                        client_socket.send(b"200 Type set to I.\r\n")
+                    elif cmd == "PASV":
+                        data_socket = self.handle_pasv(client_socket)
+                    elif cmd == "LIST":
+                        self.handle_list(client_socket, data_socket)
+                    elif cmd == "STOR":
+                        self.handle_stor(client_socket, data_socket, arg)
+                    elif cmd == "SIZE":
+                        self.handle_size(client_socket, arg)
+                    elif cmd == "MDTM":
+                        self.handle_mdtm(client_socket, arg)
+                    elif cmd == "MKD":
+                        self.handle_mkd(client_socket, arg)
+                    elif cmd == "RETR":
+                        self.handle_retr(client_socket, data_socket, arg)
+                    elif cmd == "DELE":
+                        self.handle_dele(client_socket, arg)
+                    elif cmd == "RMD":
+                        self.handle_rmd(client_socket, arg)
+                    elif cmd == "RNFR":
+                        rename_from = self.handle_rnfr(client_socket, arg)
+                    elif cmd == "RNTO":
+                        self.handle_rnto(client_socket, rename_from, arg)
+                    elif cmd == "QUIT":
+                        client_socket.send(b"221 Goodbye.\r\n")
+                        break
+                    else:
+                        client_socket.send(b"502 Command not implemented.\r\n")
+                except ConnectionResetError:
+                    print(
+                        "An existing connection was forcibly closed by one remote host .")
+                    break
+        finally:
+            client_socket.close()
+
     def handle_user(self, client_socket, username):
         return b"331 User name okay, need password.\r\n"
 
@@ -257,8 +266,9 @@ class FTPServer:
             threading.Thread(target=self.handle_client,
                              args=(client_sock,)).start()
 
+
 if __name__ == "__main__":
-    ftp_server = FTPServer()
+    ftp_server = FTPServer(host="192.168.129.219")
     ftp_server.start()
 
 

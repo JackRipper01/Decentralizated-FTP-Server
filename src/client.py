@@ -5,7 +5,7 @@ import time
 
 
 def run_client():
-    host = '127.0.0.1'  # The server's hostname or IP address
+    host = '192.168.129.219'  # The server's hostname or IP address
     port = 21          # The port used by the server
 
     # Create a socket object
