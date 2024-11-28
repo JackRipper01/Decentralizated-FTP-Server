@@ -28,7 +28,6 @@ class FTPServer:
         self.current_dir = self.resources_dir
         print(self.current_dir)
 
-
     def handle_client(self, client_socket):
         try:
             client_socket.send(b"220 Welcome to the FTP server.\r\n")
@@ -57,7 +56,8 @@ class FTPServer:
                     elif cmd == "CWD":
                         self.handle_cwd(client_socket, arg)
                     elif cmd == "CDUP":
-                        self.handle_cwd(client_socket, Path(self.current_dir).parent)
+                        self.handle_cwd(client_socket, Path(
+                            self.current_dir).parent)
                     elif cmd == "TYPE":
                         client_socket.send(b"200 Type set to I.\r\n")
                     elif cmd == "PASV":
@@ -268,24 +268,5 @@ class FTPServer:
 
 
 if __name__ == "__main__":
-    ftp_server = FTPServer(host="192.168.129.219")
+    ftp_server = FTPServer()
     ftp_server.start()
-
-
-# Status:	Connecting to 127.0.0.1: 21...
-# Status:	Connection established, waiting for welcome message...
-# Response:	220 Welcome to the FTP server.
-# Command:	AUTH TLS
-# Response:	502 Command not implemented.
-# Command:	AUTH SSL
-# Response:	502 Command not implemented.
-# Status:	Insecure server, it does not support FTP over TLS.
-# Command:	USER anonymous
-# Response:	331 User name okay, need password.
-# Command:	PASS ** *******************
-# Response:	230 User logged in , proceed.
-# Command:	OPTS UTF8 ON
-# Response:	502 Command not implemented.
-# Status:	Logged in
-# Status:	Retrieving directory listing...
-# Status:	Directory listing of "C:\Franco\Proyects\JackRipper01\ftp-server\Decentralizated-FTP-Server\transfered_files\from_client" successful
