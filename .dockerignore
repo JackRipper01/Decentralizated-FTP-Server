@@ -1,6 +1,6 @@
 # my_stuff
 test_resources/
-server_resources/
+# server_resources/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -10,7 +10,7 @@ BUFFER_SIZE = 1024
 
 
 class FTPServer:
-    def __init__(self, host='127.0.0.1', dev=True):
+    def __init__(self, host='0.0.0.0', dev=True):
 
         self.dev = True
         self.host = host
@@ -86,7 +86,8 @@ class FTPServer:
                         client_socket.send(b"221 Goodbye.\r\n")
                         break
                     else:
-                        client_socket.send(b"502 Command not implemented.\r\n")
+                        client_socket.send(
+                            b"502 Command: %s not implemented.\r\n" % cmd.encode())
                 except ConnectionResetError:
                     print(
                         "An existing connection was forcibly closed by one remote host .")
