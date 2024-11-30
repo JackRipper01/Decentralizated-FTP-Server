@@ -10,7 +10,7 @@ BUFFER_SIZE = 1024
 
 
 class FTPServer:
-    def __init__(self, host='0.0.0.0', dev=True):
+    def __init__(self, host='127.0.0.1', dev=True):
 
         self.dev = True
         self.host = host
