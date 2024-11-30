@@ -10,7 +10,7 @@ BUFFER_SIZE = 1024
 
 
 class FTPServer:
-    def __init__(self, host='10.0.10.3', dev=True):
+    def __init__(self, host='127.0.0.1', dev=True):
 
         self.dev = True
         self.host = host
@@ -273,6 +273,6 @@ class FTPServer:
 
 if __name__ == "__main__":
     import sys
-    host = sys.argv[1] if len(sys.argv) > 1 else '10.0.10.3'
+    host = sys.argv[1] if len(sys.argv) > 1 else '127.0.0.1'
     ftp_server = FTPServer(host=host)
     ftp_server.start()
