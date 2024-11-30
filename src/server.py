@@ -10,12 +10,12 @@ BUFFER_SIZE = 1024
 
 
 class FTPServer:
-    def __init__(self, host='0.0.0.0', dev=True):
+    def __init__(self, host='10.0.10.3', dev=True):
 
         self.dev = True
         self.host = host
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.bind((host, CONTROL_PORT))
+        self.server_socket.bind(('0.0.0.0', CONTROL_PORT))
         self.server_socket.listen(5)
         print(f"FTP Server listening on {host}:{CONTROL_PORT}")
         base_dir = Path(__file__).resolve().parent.parent
@@ -112,10 +112,13 @@ class FTPServer:
 
     def handle_pasv(self, client_socket):
         data_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        data_socket.bind((self.host, 0))
+        data_socket.bind(('0.0.0.0', 0))
         data_socket.listen(1)
         ip, port = data_socket.getsockname()
-        ip_parts = ip.split('.')
+        container_ip = socket.gethostbyname(socket.gethostname())
+        ip_parts = container_ip.split('.')
+
+        # ip_parts = self.host.split('.') with this change, the passive mode seems to work but ftp> ls returns 421 Service not available, remote server has closed connection.
         port_hi = port // 256
         port_lo = port % 256
         response = f'227 Entering Passive Mode ({",".join(ip_parts)},{port_hi},{port_lo})\r\n'
@@ -137,10 +140,10 @@ class FTPServer:
                 full_path = os.path.join(self.current_dir, entry)
                 if os.path.isdir(full_path):
                     # Format for directories
-                    file_info = f'drwxr-xr-x 1 owner group {os.stat(full_path).st_size} {time.strftime("%b %d %H:%M", time.gmtime(os.stat(full_path).st_mtime))} {entry}\r\n'
+                    file_info = f'{os.stat(full_path).st_size} {time.strftime("%b %d %H:%M", time.gmtime(os.stat(full_path).st_mtime))} {entry}\r\n'
                 else:
                     # Format for files
-                    file_info = f'-rw-r--r-- 1 owner group {os.stat(full_path).st_size} {time.strftime("%b %d %H:%M", time.gmtime(os.stat(full_path).st_mtime))} {entry}\r\n'
+                    file_info = f'{os.stat(full_path).st_size} {time.strftime("%b %d %H:%M", time.gmtime(os.stat(full_path).st_mtime))} {entry}\r\n'
 
                 conn.send(file_info.encode())  # Send each entry info to client
 
@@ -269,5 +272,7 @@ class FTPServer:
 
 
 if __name__ == "__main__":
-    ftp_server = FTPServer()
+    import sys
+    host = sys.argv[1] if len(sys.argv) > 1 else '10.0.10.3'
+    ftp_server = FTPServer(host=host)
     ftp_server.start()
