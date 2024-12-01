@@ -134,17 +134,16 @@ class FTPServer:
             conn, addr = data_socket.accept()  # Accept incoming connection from client
             # List all entries in current directory
             entries = os.listdir(self.current_dir)
-            
             for entry in entries:
                 full_path = os.path.join(self.current_dir, entry)
-                size_bytes = os.stat(full_path).st_size
-                size_kb = size_bytes / 1024  # Convert bytes to kilobytes
-                mtime = os.stat(full_path).st_mtime
-                mtime_str = time.strftime('%b %d %H:%M', time.gmtime(mtime))
+                if os.path.isdir(full_path):
+                    # Format for directories
+                    file_info = f'drwxr-xr-x 1 owner group {os.stat(full_path).st_size} {time.strftime("%b %d %H:%M", time.gmtime(os.stat(full_path).st_mtime))} {entry}\r\n'
+                else:
+                    # Format for files
+                    file_info = f'-rw-r--r-- 1 owner group {os.stat(full_path).st_size} {time.strftime("%b %d %H:%M", time.gmtime(os.stat(full_path).st_mtime))} {entry}\r\n'
 
-                # Format the file information as required
-                file_info = f'{entry}, Date: {mtime_str}, Size: {size_kb:.2f} KB\r\n'
-                conn.send(file_info.encode('utf-8'))
+                conn.send(file_info.encode())  # Send each entry info to client
 
             conn.close()  # Close data connection after sending all entries
             # Send completion response
