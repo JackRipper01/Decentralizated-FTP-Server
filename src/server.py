@@ -105,10 +105,13 @@ class FTPServer:
 
     def handle_cwd(self, client_socket, path):
         try:
+            print(f"Changing directory to {path}")
             os.chdir(path)
             self.current_dir = os.getcwd()
             client_socket.send(b"250 Directory successfully changed.\r\n")
+            print(f"Current directory: {self.current_dir}")
         except Exception as e:
+            print(f"Error in CWD: {e}")
             client_socket.send(b"550 Failed to change directory.\r\n")
 
     def handle_pasv(self, client_socket):
