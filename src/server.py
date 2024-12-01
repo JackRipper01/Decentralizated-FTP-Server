@@ -84,11 +84,11 @@ class FTPServer:
                         self.handle_rnto(client_socket, rename_from, arg)
                     elif cmd == "QUIT":
                         client_socket.send(b"221 Goodbye.\r\n")
-                    elif cmd == "AUTH":
-                        self.handle_auth(client_socket, arg)
-                    elif cmd == "OPTS":
-                        self.handle_opts(client_socket, arg)
-                        break
+                    # elif cmd == "AUTH":
+                    #     self.handle_auth(client_socket, arg)
+                    # elif cmd == "OPTS":
+                    #     self.handle_opts(client_socket, arg)
+                    #     break
                     else:
                         client_socket.send(
                             b"502 Command: %s not implemented.\r\n" % cmd.encode())
