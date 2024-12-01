@@ -2,6 +2,7 @@ import os
 import socket
 import threading
 import time
+import sys
 from pathlib import Path
 import threading
 
@@ -269,5 +270,6 @@ class FTPServer:
 
 
 if __name__ == "__main__":
-    ftp_server = FTPServer()
+    host = sys.argv[1] if len(sys.argv) > 1 else '127.0.0.1'
+    ftp_server = FTPServer(host=host)
     ftp_server.start()
