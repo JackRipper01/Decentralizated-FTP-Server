@@ -84,11 +84,11 @@ class FTPServer:
                         self.handle_rnto(client_socket, rename_from, arg)
                     elif cmd == "QUIT":
                         client_socket.send(b"221 Goodbye.\r\n")
-                    # elif cmd == "AUTH":
-                    #     self.handle_auth(client_socket, arg)
-                    # elif cmd == "OPTS":
-                    #     self.handle_opts(client_socket, arg)
-                    #     break
+                    elif cmd == "AUTH":
+                        self.handle_auth(client_socket, arg)
+                    elif cmd == "OPTS":
+                        self.handle_opts(client_socket, arg)
+                        break
                     else:
                         client_socket.send(
                             b"502 Command: %s not implemented.\r\n" % cmd.encode())
@@ -101,14 +101,14 @@ class FTPServer:
 
     def handle_auth(self, client_socket, arg):
         client_socket.send(b"AUTH not implemented yet.\r\n")
-    
+
     def handle_opts(self, client_socket, arg):
         if arg.upper() == "UTF8 ON":
             self.utf8_mode = True  # Enable UTF8 mode
             client_socket.send(b"200 UTF8 mode enabled.\r\n")
         else:
             client_socket.send(b"502 Command: OPTS not implemented.\r\n")
-            
+
     def handle_user(self, client_socket, username):
         return b"331 User name okay, need password.\r\n"
 
@@ -121,7 +121,7 @@ class FTPServer:
             # Check if the path is absolute or relative
             if not os.path.isabs(path):
                 path = os.path.join(self.current_dir, path)
-            
+
             print(f"Changing directory to {path}")
             os.chdir(path)
             self.current_dir = os.getcwd()
