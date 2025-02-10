@@ -12,6 +12,6 @@ docker network connect --ip 10.0.11.254 servers router
 docker build -t ftp-server -f src/server.Dockerfile src/
 docker build -t ftp-client -f src/client.Dockerfile src/
 
-docker run -d --rm --name client1 -e PYTHONUNBUFFERED=1 --cap-add NET_ADMIN --network clients ftp-client
-docker run -d --rm --name client2 -e PYTHONUNBUFFERED=1 --cap-add NET_ADMIN --network clients ftp-client "10.0.10.2"
-docker run -d --rm --name server -e PYTHONUNBUFFERED=1 --cap-add NET_ADMIN --network servers ftp-server "10.0.11.2"
+docker run -d --name client1  -e PYTHONUNBUFFERED=1 --cap-add NET_ADMIN --network clients ftp-client 
+docker run -d --name client2  -e PYTHONUNBUFFERED=1 --cap-add NET_ADMIN --network clients ftp-client 
+docker run -d --name server1 --ip 10.0.11.3 -e PYTHONUNBUFFERED=1 --cap-add NET_ADMIN --network servers ftp-server "10.0.11.3"
