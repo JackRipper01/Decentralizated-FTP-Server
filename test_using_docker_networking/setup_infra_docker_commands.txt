@@ -17,7 +17,7 @@ docker run -d --rm --name client2 -e PYTHONUNBUFFERED=1 --cap-add NET_ADMIN --ne
 docker run -d --rm --name server -e PYTHONUNBUFFERED=1 --cap-add NET_ADMIN --network servers ftp-server "10.0.11.2"
 
 for descentralizated behavior:
-docker run -d --name server-develop0 --ip 10.0.11.3 -e PYTHONUNBUFFERED=1 --cap-add NET_ADMIN --network servers -v C:\Franco\Proyects\JackRipper01\Decentralizated-FTP-Server\src\:/app ftp-server 0  "10.0.11.3"
-docker run -d --name server-develop1 --ip 10.0.11.4 -e PYTHONUNBUFFERED=1 --cap-add NET_ADMIN --network servers -v C:\Franco\Proyects\JackRipper01\Decentralizated-FTP-Server\src\:/app ftp-server 1  "10.0.11.4"
-docker run -d --name server-develop2 --ip 10.0.11.5 -e PYTHONUNBUFFERED=1 --cap-add NET_ADMIN --network servers -v C:\Franco\Proyects\JackRipper01\Decentralizated-FTP-Server\src\:/app ftp-server 2  "10.0.11.5"
-docker run -d --name server-develop3 --ip 10.0.11.6 -e PYTHONUNBUFFERED=1 --cap-add NET_ADMIN --network servers -v C:\Franco\Proyects\JackRipper01\Decentralizated-FTP-Server\src\:/app ftp-server 3  "10.0.11.6"
+docker run -d --name server-develop0 --ip 10.0.11.3 -e PYTHONUNBUFFERED=1 --cap-add NET_ADMIN --network servers -v C:\Franco\Proyects\JackRipper01\Decentralizated-FTP-Server\src\:/app ftp-server 2  "10.0.11.3"
+docker run -d --name server-develop1 --ip 10.0.11.4 -e PYTHONUNBUFFERED=1 --cap-add NET_ADMIN --network servers -v C:\Franco\Proyects\JackRipper01\Decentralizated-FTP-Server\src\:/app ftp-server 17  "10.0.11.4"
+docker run -d --name server-develop2 --ip 10.0.11.5 -e PYTHONUNBUFFERED=1 --cap-add NET_ADMIN --network servers -v C:\Franco\Proyects\JackRipper01\Decentralizated-FTP-Server\src\:/app ftp-server 22  "10.0.11.5"
+docker run -d --name server-develop3 --ip 10.0.11.6 -e PYTHONUNBUFFERED=1 --cap-add NET_ADMIN --network servers -v C:\Franco\Proyects\JackRipper01\Decentralizated-FTP-Server\src\:/app ftp-server 30  "10.0.11.6"
