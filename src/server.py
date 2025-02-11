@@ -5,15 +5,8 @@ import time
 import sys
 from pathlib import Path
 import hashlib
-from centralized_handlers import handler
-
-CONTROL_PORT = 21
-BUFFER_SIZE = 1024
-# Port for server-to-server communication (NOT USED NOW)
-INTER_NODE_PORT = 5000
-NODE_DISCOVERY_PORT = 3000  # Port for UDP node discovery broadcasts
-NODE_DISCOVERY_INTERVAL = 2  # Interval in seconds for broadcasting hello messages
-
+from centralized_handlers import handler as centralized_handler
+from static_config import *
 
 class FTPServer:
     def __init__(self, host='127.0.0.1', node_id=0, chord_nodes_config_str=None):
@@ -414,7 +407,7 @@ class FTPServer:
         while True:
             client_sock, addr = self.server_socket.accept()
             print(f"Connection from {addr}")
-            threading.Thread(target=handler.handle_client,
+            threading.Thread(target=centralized_handler.handle_client,
                              args=(client_sock,)).start()
 
 # FTP server methods (rest of FTP server methods remain mostly the same)

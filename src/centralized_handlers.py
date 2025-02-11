@@ -5,7 +5,7 @@ import time
 import sys
 from pathlib import Path
 import hashlib
-from server import BUFFER_SIZE
+from static_config import *
 
 # FTP server methods (rest of FTP server methods remain mostly the same)
     # ... (handle_client, handle_user, handle_pwd, handle_cwd, handle_pasv, handle_list, handle_stor, handle_size, handle_mdtm, handle_mkd, handle_retr, handle_dele, handle_rmd, handle_rnfr, handle_rnto, start) ...
