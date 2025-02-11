@@ -10,6 +10,8 @@ CONTROL_PORT = 21
 BUFFER_SIZE = 1024
 # Port for server-to-server communication (NOT USED NOW)
 INTER_NODE_PORT = 5000
+NODE_DISCOVERY_PORT = 3000  # Port for UDP node discovery broadcasts
+NODE_DISCOVERY_INTERVAL = 2  # Interval in seconds for broadcasting hello messages
 
 
 class FTPServer:
@@ -17,9 +19,7 @@ class FTPServer:
         """
         Initializes the FTPServer instance.
         """
-        self.node_id = node_id  # Unique ID for this Chord node
-        self.chord_nodes_config = self.parse_node_config_string(
-            chord_nodes_config_str)  # Parse string in init
+        
         self.utf8_mode = False
         self.host = host
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -39,6 +39,18 @@ class FTPServer:
         self.current_dir = self.resources_dir
         print(self.current_dir)
 
+        self.node_id = node_id  # Unique ID for this Chord node
+        # self.chord_nodes_config = self.parse_node_config_string(
+        #     chord_nodes_config_str)  # Parse string in init - REMOVED
+        self.chord_nodes_config = []  # Initialize as empty list - NEW
+        self_config = [self.host, CONTROL_PORT,
+                       self.node_id]  # Create self config
+        self.chord_nodes_config.append(self_config)  # Add self to the list
+        # Log it
+        print(f"Node {self.node_id} initialized with self config: {self_config}")
+        
+        self.start_node_discovery_broadcast()  # Start broadcasting - NEW
+        self.start_node_discovery_listener()  # Start listener - NEW
         # INTER-NODE SERVER COMPONENTS REMOVED
 
     def parse_node_config_string(self, config_str):
@@ -63,6 +75,93 @@ class FTPServer:
                     f"Warning: Invalid node config entry format: {entry}. Skipping.")
         return nodes
 
+    def start_node_discovery_broadcast(self):
+        """Starts the node discovery broadcast thread."""
+        thread = threading.Thread(
+            target=self.broadcast_hello_message, daemon=True)
+        thread.start()
+        print(f"Node Discovery Broadcast thread started.")
+
+    def start_node_discovery_listener(self):
+        """Starts the node discovery listener thread."""
+        thread = threading.Thread(
+            target=self.listen_for_hello_messages, daemon=True)
+        thread.start()
+        print(f"Node Discovery Listener thread started.")
+
+    def broadcast_hello_message(self):
+        """Periodically broadcasts a UDP 'hello' message with node information."""
+        broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        broadcast_socket.setsockopt(
+            socket.SOL_SOCKET, socket.SO_BROADCAST, 1)  # Enable broadcasting
+        # Using '<broadcast>'
+        server_address = ('<broadcast>', NODE_DISCOVERY_PORT)
+
+        while True:
+            message = f"HELLO,{self.host},{CONTROL_PORT},{self.node_id}"
+            try:
+                sent = broadcast_socket.sendto(
+                    message.encode(), server_address)
+                print(
+                    f"Node {self.node_id} broadcasted hello message: '{message}'")
+            except Exception as e:
+                print(
+                    f"Error broadcasting hello message from Node {self.node_id}: {e}")
+            time.sleep(NODE_DISCOVERY_INTERVAL)  # Broadcast every N seconds
+
+    def listen_for_hello_messages(self):
+        """Listens for UDP 'hello' messages from other nodes and updates node config."""
+        listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        listen_address = ("", NODE_DISCOVERY_PORT)  # Bind to all interfaces
+        listen_socket.bind(listen_address)
+        print(
+            f"Node {self.node_id} listening for hello messages on port {NODE_DISCOVERY_PORT}")
+
+        while True:
+            try:
+                data, address = listen_socket.recvfrom(BUFFER_SIZE)
+                message = data.decode().strip()
+                if message.startswith("HELLO,"):
+                    parts = message.split(',')
+                    if len(parts) == 4 and parts[0] == "HELLO":
+                        hello_host, hello_control_port_str, hello_node_id_str = parts[
+                            1], parts[2], parts[3]
+                        try:
+                            hello_control_port = int(hello_control_port_str)
+                            hello_node_id = int(hello_node_id_str)
+                            new_node_info = [hello_host,
+                                             hello_control_port, hello_node_id]
+
+                            node_exists = False
+                            for existing_node in self.chord_nodes_config:
+                                if existing_node[2] == hello_node_id:  # Check by node_id
+                                    node_exists = True
+                                    break
+                            if not node_exists and hello_node_id != self.node_id:  # Avoid adding self and duplicates
+                                self.chord_nodes_config.append(new_node_info)
+                                print(
+                                    f"Node {self.node_id} discovered new node: {new_node_info}")
+                                print(
+                                    f"Current chord_nodes_config: {self.chord_nodes_config}")
+                            else:
+                                if hello_node_id != self.node_id:
+                                    print(
+                                        f"Node {self.node_id} received hello from existing node: {new_node_info} (or self)")
+
+                        except ValueError:
+                            print(
+                                f"Node {self.node_id} received invalid hello message - ValueError: '{message}' from {address}")
+                    else:
+                        print(
+                            f"Node {self.node_id} received invalid hello message - format error: '{message}' from {address}")
+                else:
+                    print(
+                        f"Node {self.node_id} received non-hello message: '{message}' from {address}")
+
+            except Exception as e:
+                print(
+                    f"Error listening for hello messages on Node {self.node_id}: {e}")
+                
 # Inter-node communication (server-to-server) methods - REMOVED
 
 # Chord methods (No changes needed in Chord logic itself)
