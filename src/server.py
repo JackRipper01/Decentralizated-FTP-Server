@@ -5,6 +5,7 @@ import time
 import sys
 from pathlib import Path
 import hashlib
+import shutil
 
 CONTROL_PORT = 21
 BUFFER_SIZE = 1024
@@ -12,14 +13,15 @@ BUFFER_SIZE = 1024
 INTER_NODE_PORT = 5000
 NODE_DISCOVERY_PORT = 3000  # Port for UDP node discovery broadcasts
 NODE_DISCOVERY_INTERVAL = 2  # Interval in seconds for broadcasting hello messages
+TEMP_DOWNLOAD_DIR_NAME = "temp_downloads"
 
 
 class FTPServer:
-    def __init__(self, host='127.0.0.1', node_id=0, chord_nodes_config_str=None):
+    def __init__(self, host='127.0.0.1', node_id=0):
         """
         Initializes the FTPServer instance.
         """
-        
+
         self.utf8_mode = False
         self.host = host
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -40,15 +42,13 @@ class FTPServer:
         print(self.current_dir)
 
         self.node_id = node_id  # Unique ID for this Chord node
-        # self.chord_nodes_config = self.parse_node_config_string(
-        #     chord_nodes_config_str)  # Parse string in init - REMOVED
         self.chord_nodes_config = []  # Initialize as empty list - NEW
         self_config = [self.host, CONTROL_PORT,
                        self.node_id]  # Create self config
         self.chord_nodes_config.append(self_config)  # Add self to the list
         # Log it
         print(f"Node {self.node_id} initialized with self config: {self_config}")
-        
+
         self.start_node_discovery_broadcast()  # Start broadcasting - NEW
         self.start_node_discovery_listener()  # Start listener - NEW
         # INTER-NODE SERVER COMPONENTS REMOVED
@@ -102,8 +102,8 @@ class FTPServer:
             try:
                 sent = broadcast_socket.sendto(
                     message.encode(), server_address)
-                print(
-                    f"Node {self.node_id} broadcasted hello message: '{message}'")
+                # print(
+                #     f"Node {self.node_id} broadcasted hello message: '{message}'")
             except Exception as e:
                 print(
                     f"Error broadcasting hello message from Node {self.node_id}: {e}")
@@ -114,8 +114,8 @@ class FTPServer:
         listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         listen_address = ("", NODE_DISCOVERY_PORT)  # Bind to all interfaces
         listen_socket.bind(listen_address)
-        print(
-            f"Node {self.node_id} listening for hello messages on port {NODE_DISCOVERY_PORT}")
+        # print(
+        #     f"Node {self.node_id} listening for hello messages on port {NODE_DISCOVERY_PORT}")
 
         while True:
             try:
@@ -145,8 +145,9 @@ class FTPServer:
                                     f"Current chord_nodes_config: {self.chord_nodes_config}")
                             else:
                                 if hello_node_id != self.node_id:
-                                    print(
-                                        f"Node {self.node_id} received hello from existing node: {new_node_info} (or self)")
+                                    # print(
+                                    #     f"Node {self.node_id} received hello from existing node: {new_node_info} (or self)")
+                                    a = 3
 
                         except ValueError:
                             print(
@@ -161,7 +162,7 @@ class FTPServer:
             except Exception as e:
                 print(
                     f"Error listening for hello messages on Node {self.node_id}: {e}")
-                
+
 # Inter-node communication (server-to-server) methods - REMOVED
 
 # Chord methods (No changes needed in Chord logic itself)
@@ -171,16 +172,32 @@ class FTPServer:
         """
         return int(hashlib.sha1(filename.encode()).hexdigest(), 16) % 1024
 
-    def find_successor(self, key, nodes_config):
+    def find_successors(self, key, nodes_config, num_successors=3):
         """
-        Finds the successor node for a given key in the Chord ring.
+        Finds a list of successor nodes for a given key in the Chord ring,
+        including the node itself and the next ones in the ring.
+        Ensures no duplicate nodes are returned in the list.
+
+        Args:
+            key (int): The key to find successors for.
+            nodes_config (list): List of node configurations.
+            num_successors (int): The number of successors to return (default is 3).
+
+        Returns:
+            list: A list of unique node info lists, representing the successors.
+                  The list will contain at most num_successors unique nodes,
+                  and might be shorter if there are fewer unique nodes in the ring.
         """
         ring_size = 1024  # Same as key space
         # Sort nodes by node_id
         sorted_nodes = sorted(nodes_config, key=lambda node_info: node_info[2])
         if not sorted_nodes:
-            # If no other nodes, current node is the only one
-            return [self.host, CONTROL_PORT, self.node_id]
+            # If no other nodes, current node is the only one (return self num_successors times - but only unique once)
+            # Return only self once as it's the only unique node
+            return [[self.host, CONTROL_PORT, self.node_id]]
+
+        primary_successor = None
+        successor_index = -1  # Keep track of the index of the primary successor
 
         for i in range(len(sorted_nodes)):
             current_node_info = sorted_nodes[i]
@@ -192,114 +209,196 @@ class FTPServer:
 
             if current_node_id < next_node_id:  # Normal case, ring not wrapped around
                 if current_node_id < key <= next_node_id:
-                    return next_node_info
+                    primary_successor = next_node_info
+                    successor_index = next_index
+                    break
             # Ring wrapped around, e.g., node IDs are [800, 900, 100, 200]
             else:
                 if key > current_node_id or key <= next_node_id:  # Key is in the wrap-around range
-                    return next_node_info
-        # If key is smaller than the smallest node ID, return the first node in the ring
-        return sorted_nodes[0]
+                    primary_successor = next_node_info
+                    successor_index = next_index
+                    break
 
+        if not primary_successor:
+            # If key is smaller than the smallest node ID, the first node in the ring is the successor
+            primary_successor = sorted_nodes[0]
+            successor_index = 0
 
-# File storage/retrieval methods - REMOVED `store_file_on_node`, `retrieve_file_from_node`
+        successors_list = []
+        added_node_ids = set()  # Keep track of added node IDs to avoid duplicates
+
+        # Add the primary successor if it's not already added
+        if primary_successor[2] not in added_node_ids:
+            successors_list.append(primary_successor)
+            added_node_ids.add(primary_successor[2])
+
+        # Add the next num_successors - 1 successors, ensuring no duplicates
+        for i in range(1, num_successors):
+            if len(successors_list) >= len(sorted_nodes):  # Stop if we've added all unique nodes
+                break
+            next_successor_index = (successor_index + i) % len(sorted_nodes)
+            next_successor = sorted_nodes[next_successor_index]
+            # Check for duplicates before adding
+            if next_successor[2] not in added_node_ids:
+                successors_list.append(next_successor)
+                added_node_ids.add(next_successor[2])
+
+        return successors_list
 
 # Decentralized FTP server methods
 
-    def decentralized_handle_stor(self, client_socket, data_socket, filename):
+    def decentralized_handle_stor(self, client_socket, data_socket, filename, is_forwarded_request=False):
         """
-        Handles the STOR command in a decentralized manner using simplified FTP client for inter-node communication (no USER/PASS).
+        Handles the STOR command in a decentralized manner.
+        Data is first stored in a temp file, then distributed to responsible nodes.
         """
         if not data_socket:
             client_socket.send(b"425 Use PASV first.\r\n")
             return
 
-        key = self.get_key(filename)  # Calculate Chord key
-        responsible_node_info = self.find_successor(
-            key, self.chord_nodes_config)
-        responsible_node_host, responsible_node_control_port, responsible_node_id = responsible_node_info
+        key = self.get_key(filename)
+        responsible_nodes_info = self.find_successors(
+            key, self.chord_nodes_config, num_successors=3)
 
-        if responsible_node_host == self.host and responsible_node_control_port == CONTROL_PORT:
-            # Current node is responsible, store locally
-            print(
-                f"Node {self.node_id} is responsible for key {key}, storing locally.")
-            try:
-                client_socket.send(b"150 Ok to send data.\r\n")
-                conn, addr = data_socket.accept()
-                with open(os.path.join(self.current_dir, filename), 'wb') as file:
-                    while True:
-                        data = conn.recv(BUFFER_SIZE)
-                        if not data:
-                            break
-                        file.write(data)
-                conn.close()
-                client_socket.send(b"226 Transfer complete.\r\n")
-            except Exception as e:
-                print(f"Error in decentralized_handle_stor (local): {e}")
-                client_socket.send(b"550 Failed to store file.\r\n")
-            finally:
-                if data_socket:
-                    data_socket.close()
+        # Ensure temp download directory exists
+        temp_dir_path = self.resources_dir.joinpath(
+            TEMP_DOWNLOAD_DIR_NAME)
+        if not temp_dir_path.exists():
+            temp_dir_path.mkdir(parents=True, exist_ok=True)
 
-        else:
-            # Another node is responsible, act as FTP client to forward (simplified - no USER/PASS)
-            print(
-                f"Node at {responsible_node_host}:{responsible_node_control_port} is responsible for key {key}, forwarding STOR request via simplified FTP client.")
-            try:
-                client_socket.send(
-                    b"150 Forwarding data to responsible node via simplified FTP.\r\n")
-                conn, addr = data_socket.accept()
+        # Unique temp filename could be improved
+        temp_file_path = temp_dir_path.joinpath(f"temp_{filename}")
+        print(
+            f"Node {self.node_id}: Storing data to temp file: {temp_file_path}")
 
-                # Simplified FTP Client Logic (no USER/PASS)
-                ftp_client_socket = socket.socket(
-                    socket.AF_INET, socket.SOCK_STREAM)
-                ftp_client_socket.connect(
-                    (responsible_node_host, responsible_node_control_port))
-                ftp_client_socket.recv(BUFFER_SIZE)  # Welcome message
-                # USER/PASS REMOVED
-                ftp_client_socket.send(b"PASV\r\n")
-                pasv_response = ftp_client_socket.recv(BUFFER_SIZE).decode()
-                # Parse PASV response to get data port
-                ip_str = pasv_response.split('(')[1].split(')')[0]
-                ip_parts = ip_str.split(',')
-                data_server_ip = ".".join(ip_parts[:4])
-                data_server_port = (int(ip_parts[4]) << 8) + int(ip_parts[5])
-
-                ftp_data_socket_client = socket.socket(
-                    socket.AF_INET, socket.SOCK_STREAM)
-                ftp_data_socket_client.connect(
-                    (data_server_ip, data_server_port))
-
-                ftp_client_socket.send(f"STOR {filename}\r\n".encode())
-                ftp_client_socket.recv(BUFFER_SIZE)  # 150 response
-
-                # Forward data from client data connection to inter-node data connection
+        try:
+            client_socket.send(
+                b"150 Ok to send data, storing to temp file.\r\n")
+            conn, addr = data_socket.accept()
+            with open(temp_file_path, 'wb') as temp_file:
                 while True:
-                    data_from_client = conn.recv(BUFFER_SIZE)
-                    if not data_from_client:
+                    data = conn.recv(BUFFER_SIZE)
+                    if not data:
                         break
-                    ftp_data_socket_client.sendall(data_from_client)
+                    temp_file.write(data)
+            conn.close()
+            print(f"Node {self.node_id}: Finished receiving data to temp file.")
+            client_socket.send(
+                b"226 Data received and stored to temp file.\r\n")
 
-                ftp_data_socket_client.close()
-                conn.close()  # Close client data connection
-                response = ftp_client_socket.recv(
-                    BUFFER_SIZE).decode()  # Get 226 or error
-                ftp_client_socket.close()
+            if not is_forwarded_request:
+                # Distribute to responsible nodes
+                for node_info in responsible_nodes_info:
+                    node_host, node_control_port, node_id = node_info
+                    if node_host == self.host and node_control_port == CONTROL_PORT:
+                        # Current node is responsible, store locally (copy from temp)
+                        print(
+                            f"Node {self.node_id}: Node is responsible, storing locally from temp file.")
+                        try:
+                            final_file_path = os.path.join(
+                                self.current_dir, filename)
+                            # Use shutil.copy2 for efficient local copy
+                            shutil.copy2(temp_file_path, final_file_path)
+                            print(
+                                f"Node {self.node_id}: Successfully stored locally from temp file: {filename}")
 
-                if response.startswith("226"):
-                    client_socket.send(
-                        b"226 Transfer complete (forwarded via simplified FTP).\r\n")
-                else:
-                    client_socket.send(
-                        b"550 Failed to forward file via simplified FTP.\r\n")  # Improve error reporting
+                        except Exception as e:
+                            print(
+                                f"Node {self.node_id}: Error storing locally from temp file: {e}")
+                            # Inform client of local store failure? - consider
+                            client_socket.send(
+                                b"550 Failed to store file locally from temp.\r\n")
 
+                    else:
+                        # Another node is responsible, forward via simplified FTP from temp file
+                        print(
+                            f"Node {self.node_id}: Forwarding file to node {node_id} from temp file.")
+                        try:
+                            # Simplified FTP Client Logic (no USER/PASS) - adapted to send from file
+                            ftp_client_socket = socket.socket(
+                                socket.AF_INET, socket.SOCK_STREAM)
+                            ftp_client_socket.connect(
+                                (node_host, node_control_port))
+                            ftp_client_socket.recv(BUFFER_SIZE)  # Welcome message
+                            ftp_client_socket.send(b"PASV\r\n")
+                            pasv_response = ftp_client_socket.recv(
+                                BUFFER_SIZE).decode()
+                            ip_str = pasv_response.split('(')[1].split(')')[0]
+                            ip_parts = ip_str.split(',')
+                            data_server_ip = ".".join(ip_parts[:4])
+                            data_server_port = (
+                                int(ip_parts[4]) << 8) + int(ip_parts[5])
+
+                            ftp_data_socket_client = socket.socket(
+                                socket.AF_INET, socket.SOCK_STREAM)
+                            ftp_data_socket_client.connect(
+                                (data_server_ip, data_server_port))
+
+                            ftp_client_socket.send(
+                                f"FORWARD_STOR {filename}\r\n".encode())
+                            ftp_client_socket.recv(BUFFER_SIZE)  # 150 response
+
+                            with open(temp_file_path, 'rb') as temp_file_forward:
+                                while True:
+                                    data_to_forward = temp_file_forward.read(
+                                        BUFFER_SIZE)
+                                    if not data_to_forward:
+                                        break
+                                    ftp_data_socket_client.sendall(data_to_forward)
+
+                            ftp_data_socket_client.close()
+                            response = ftp_client_socket.recv(
+                                BUFFER_SIZE).decode()  # Get 226 or error
+                            ftp_client_socket.close()
+
+                            if response.startswith("226"):
+                                print(
+                                    f"Node {self.node_id}: Successfully forwarded file to node {node_id}.")
+                            else:
+                                print(
+                                    f"Node {self.node_id}: Failed to forward file to node {node_id}: {response.strip()}")
+
+                        except Exception as e:
+                            print(
+                                f"Node {self.node_id}: Error forwarding file to node {node_id} via simplified FTP: {e}")
+                            # client_socket.send(b"550 Failed to store file (forwarding error via simplified FTP).\r\n") # Don't fail client request on one forward fail - replication
+
+            else:
+                # If it's a forwarded request, just store locally if responsible
+                if any(node[0] == self.host and int(node[1]) == CONTROL_PORT for node in responsible_nodes_info):
+                    print(
+                        f"Node {self.node_id}: Forwarded STOR, and this node is responsible, storing locally from temp.")
+                    try:
+                        final_file_path = os.path.join(
+                            self.current_dir, filename)
+                        shutil.copy2(temp_file_path, final_file_path)
+                        print(
+                            f"Node {self.node_id}: Successfully stored forwarded file locally: {filename}")
+                    except Exception as e:
+                        print(
+                            f"Node {self.node_id}: Error storing forwarded file locally: {e}")
+                        # Consider better error reporting
+                        client_socket.send(
+                            b"550 Failed to store forwarded file locally.\r\n")
+                        
+            # Inform client transfer complete after all distribution attempts
+            client_socket.send(
+                b"226 Transfer complete (file distributed to responsible nodes).\r\n")
+
+        except Exception as e:
+            print(f"Error in decentralized_handle_stor (main process): {e}")
+            client_socket.send(b"550 Failed to store file.\r\n")
+        finally:
+            if data_socket:
+                data_socket.close()
+            try:
+                # Clean up temp file after attempts to distribute (success or failure)
+                os.remove(temp_file_path)
+                print(
+                    f"Node {self.node_id}: Temp file removed: {temp_file_path}")
             except Exception as e:
                 print(
-                    f"Error in decentralized_handle_stor (forwarding via simplified FTP): {e}")
-                client_socket.send(
-                    b"550 Failed to store file (forwarding error via simplified FTP).\r\n")
-            finally:
-                if data_socket:
-                    data_socket.close()
+                    f"Node {self.node_id}: Error deleting temp file {temp_file_path}: {e}")
 
     def decentralized_handle_retr(self, client_socket, data_socket, filename):
         """
@@ -452,6 +551,9 @@ class FTPServer:
                     elif cmd == "STOR":
                         self.decentralized_handle_stor(
                             client_socket, data_socket, arg)
+                    elif cmd == "FORWARD_STOR":
+                        self.decentralized_handle_stor(
+                            client_socket, data_socket, arg,is_forwarded_request=True,)
                     elif cmd == "SIZE":
                         self.handle_size(client_socket, arg)
                     elif cmd == "MDTM":
@@ -682,17 +784,14 @@ class FTPServer:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 4:  # Expecting node_id, config_string, host_ip
-        print("Usage: python server.py <node_id> <node_config_string> <host_ip>")
-        print("Example config string: '10.0.11.3,21,0;10.0.11.4,21,1;10.0.11.5,21,2'")
-        print("Example run: python server.py 0 '10.0.11.3,21,0;10.0.11.4,21,1;10.0.11.5,21,2' 10.0.11.3")
+    if len(sys.argv) < 3:  # Expecting node_id, config_string, host_ip
+        print("""Usage: python server.py <node_id> "<host_ip>" """)
+        print("""docker run -d --name server-develop3 --ip 10.0.11.6 -e PYTHONUNBUFFERED=1 --cap-add NET_ADMIN --network servers -v C:\Franco\Proyects\JackRipper01\Decentralizated-FTP-Server\src\:/app ftp-server 3  "10.0.11.6" """)
         sys.exit(1)
 
     node_id = int(sys.argv[1])
-    node_config_str = sys.argv[2]  # Now directly reading string config
-    host_ip = sys.argv[3]
+    host_ip = sys.argv[2]
     print(f"host_ip from command line: {host_ip}")
 
-    ftp_server = FTPServer(host=host_ip, node_id=node_id,
-                           chord_nodes_config_str=node_config_str)  # Pass string
+    ftp_server = FTPServer(host=host_ip, node_id=node_id)  # Pass string
     ftp_server.start()
