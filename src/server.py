@@ -14,7 +14,8 @@ INTER_NODE_PORT = 5000
 NODE_DISCOVERY_PORT = 3000  # Port for UDP node discovery broadcasts
 NODE_DISCOVERY_INTERVAL = 2  # Interval in seconds for broadcasting hello messages
 TEMP_DOWNLOAD_DIR_NAME = "temp_downloads"
-
+# Define timeout, e.g., 3 times the broadcast interval
+INACTIVE_NODE_TIMEOUT = NODE_DISCOVERY_INTERVAL * 3
 
 class FTPServer:
     def __init__(self, host='127.0.0.1', node_id=0):
@@ -42,16 +43,16 @@ class FTPServer:
         print(self.current_dir)
 
         self.node_id = node_id  # Unique ID for this Chord node
-        self.chord_nodes_config = []  # Initialize as empty list - NEW
+        self.chord_nodes_config = []  # Initialize as empty list
         self_config = [self.host, CONTROL_PORT,
-                       self.node_id]  # Create self config
-        self.chord_nodes_config.append(self_config)  # Add self to the list
+                       self.node_id, time.time()]  # timestamp 
+        self.chord_nodes_config.append(self_config)
         # Log it
         print(f"Node {self.node_id} initialized with self config: {self_config}")
 
-        self.start_node_discovery_broadcast()  # Start broadcasting - NEW
-        self.start_node_discovery_listener()  # Start listener - NEW
-        # INTER-NODE SERVER COMPONENTS REMOVED
+        self.start_node_discovery_broadcast()  
+        self.start_node_discovery_listener()  
+        self.start_inactive_node_removal_thread()
 
     def parse_node_config_string(self, config_str):
         """Parses the comma-separated node config string."""
@@ -88,7 +89,6 @@ class FTPServer:
             target=self.listen_for_hello_messages, daemon=True)
         thread.start()
         print(f"Node Discovery Listener thread started.")
-
     def broadcast_hello_message(self):
         """Periodically broadcasts a UDP 'hello' message with node information."""
         broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -133,16 +133,30 @@ class FTPServer:
                                              hello_control_port, hello_node_id]
 
                             node_exists = False
+                            
                             for existing_node in self.chord_nodes_config:
                                 if existing_node[2] == hello_node_id:  # Check by node_id
                                     node_exists = True
+                                    # Defensive check: Ensure timestamp exists
+                                    if len(existing_node) < 4:
+                                        print(
+                                            f"Warning: Node config for node {hello_node_id} is missing timestamp. Adding current timestamp.")
+                                        # Add timestamp if missing
+                                        existing_node.append(time.time())
+                                    else:
+                                        # Update timestamp
+                                        existing_node[3] = time.time()
                                     break
+                                
                             if not node_exists and hello_node_id != self.node_id:  # Avoid adding self and duplicates
+                                # Add timestamp for new node
+                                new_node_info.append(time.time())
                                 self.chord_nodes_config.append(new_node_info)
                                 print(
                                     f"Node {self.node_id} discovered new node: {new_node_info}")
                                 print(
                                     f"Current chord_nodes_config: {self.chord_nodes_config}")
+                                
                             else:
                                 if hello_node_id != self.node_id:
                                     # print(
@@ -163,6 +177,45 @@ class FTPServer:
                 print(
                     f"Error listening for hello messages on Node {self.node_id}: {e}")
 
+    def start_inactive_node_removal_thread(self):
+        """Starts the inactive node removal loop in a separate thread."""
+        thread = threading.Thread(
+            target=self.run_inactive_node_removal_loop, daemon=True)
+        thread.start()
+        print(
+            f"Inactive Node Removal thread started. Checking every {INACTIVE_NODE_TIMEOUT} seconds.")
+
+    def run_inactive_node_removal_loop(self):
+        """
+        Runs a loop that periodically checks and removes inactive nodes
+        using time.sleep.
+        """
+        print("Inactive Node Removal loop started.")
+        while True:
+            time.sleep(INACTIVE_NODE_TIMEOUT)  # Wait for timeout period
+            self.remove_inactive_nodes()
+            
+    def remove_inactive_nodes(self):
+        """Removes inactive nodes from chord_nodes_config based on last hello message time."""
+        print("Checking for inactive nodes...")
+        current_time = time.time()
+
+        for node_info in self.chord_nodes_config:
+            node_id = node_info[2]
+            last_seen_time = node_info[3]
+            if node_id == self.node_id:  # Don't remove self
+                continue
+
+            if current_time - last_seen_time > INACTIVE_NODE_TIMEOUT:
+                print(
+                    f"Inactive node found: Node {node_info[2]} (last seen: {node_info[3]})")
+                self.chord_nodes_config.remove(
+                    node_info)  # Remove inactive nodes
+
+            print(
+                f"Updated chord_nodes_config after removing inactive nodes: {self.chord_nodes_config}")
+        else:
+            print("No inactive nodes found.")
 
 # Chord methods (No changes needed in Chord logic itself)
 
@@ -551,14 +604,14 @@ class FTPServer:
                         data_socket = self.handle_pasv(client_socket)
                     elif cmd == "LIST":
                         self.handle_list(client_socket, data_socket)
-                    elif cmd == "FETCH_LISTING":  # Add this condition
+                    elif cmd == "FETCH_LISTING":  
                         self.handle_fetch_listing(client_socket, data_socket)
                     elif cmd == "STOR":
                         self.decentralized_handle_stor(
                             client_socket, data_socket, arg)
                     elif cmd == "FORWARD_STOR":
                         self.decentralized_handle_stor(
-                            client_socket, data_socket, arg, is_forwarded_request=True,)
+                            client_socket, data_socket, arg, is_forwarded_request=True)
                     elif cmd == "SIZE":
                         self.handle_size(client_socket, arg)
                     elif cmd == "MDTM":
