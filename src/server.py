@@ -11,11 +11,12 @@ CONTROL_PORT = 21
 BUFFER_SIZE = 1024
 # Port for server-to-server communication (NOT USED NOW)
 INTER_NODE_PORT = 5000
-NODE_DISCOVERY_PORT = 3000  # Port for UDP node discovery broadcasts
+GLOBAL_COMMS_PORT = 3000  # Port for UDP global server communication
 NODE_DISCOVERY_INTERVAL = 2  # Interval in seconds for broadcasting hello messages
 TEMP_DOWNLOAD_DIR_NAME = "temp_downloads"
 # Define timeout, e.g., 3 times the broadcast interval
 INACTIVE_NODE_TIMEOUT = NODE_DISCOVERY_INTERVAL * 3
+
 
 class FTPServer:
     def __init__(self, host='127.0.0.1', node_id=0):
@@ -45,15 +46,21 @@ class FTPServer:
         self.node_id = node_id  # Unique ID for this Chord node
         self.chord_nodes_config = []  # Initialize as empty list
         self_config = [self.host, CONTROL_PORT,
-                       self.node_id, time.time()]  # timestamp 
+                       self.node_id, time.time()]  # timestamp
         self.chord_nodes_config.append(self_config)
+
+        # Dictionary to track file replicas: {filename: [node_id1, node_id2, node_id3]}
+        self.file_replicas = {}
+
         # Log it
         print(f"Node {self.node_id} initialized with self config: {self_config}")
 
-        self.start_node_discovery_broadcast()  
-        self.start_node_discovery_listener()  
+        self.start_node_discovery_broadcast()
+        self.start_node_discovery_listener()
         self.start_inactive_node_removal_thread()
-
+        self.start_file_replicas_listener()
+        
+        
     def parse_node_config_string(self, config_str):
         """Parses the comma-separated node config string."""
         if not config_str:
@@ -89,13 +96,22 @@ class FTPServer:
             target=self.listen_for_hello_messages, daemon=True)
         thread.start()
         print(f"Node Discovery Listener thread started.")
+
+    def start_inactive_node_removal_thread(self):
+        """Starts the inactive node removal loop in a separate thread."""
+        thread = threading.Thread(
+            target=self.run_inactive_node_removal_loop, daemon=True)
+        thread.start()
+        print(
+            f"Inactive Node Removal thread started. Checking every {INACTIVE_NODE_TIMEOUT} seconds.")
+        
     def broadcast_hello_message(self):
         """Periodically broadcasts a UDP 'hello' message with node information."""
         broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         broadcast_socket.setsockopt(
             socket.SOL_SOCKET, socket.SO_BROADCAST, 1)  # Enable broadcasting
         # Using '<broadcast>'
-        server_address = ('<broadcast>', NODE_DISCOVERY_PORT)
+        server_address = ('<broadcast>', GLOBAL_COMMS_PORT)
 
         while True:
             message = f"HELLO,{self.host},{CONTROL_PORT},{self.node_id}"
@@ -109,13 +125,29 @@ class FTPServer:
                     f"Error broadcasting hello message from Node {self.node_id}: {e}")
             time.sleep(NODE_DISCOVERY_INTERVAL)  # Broadcast every N seconds
 
+    def broadcast_file_replicas_update(self):
+        """Broadcasts a UDP message with the current file_replicas data."""
+        broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        broadcast_socket.bind(('', 0)) # Bind to any available port
+
+        message = self.serialize_file_replicas() # Serialize file_replicas to string
+        message = f"FILE_REPLICAS_UPDATE:{message}".encode('utf-8') # Add a prefix
+
+        for _ in range(3): # Send multiple times for reliability in UDP
+            broadcast_socket.sendto(message, ('<broadcast>', GLOBAL_COMMS_PORT))
+            time.sleep(0.1) # small delay between broadcasts
+
+        broadcast_socket.close()
+        print(f"Node {self.node_id}: Broadcasted file_replicas update.")
+        
     def listen_for_hello_messages(self):
         """Listens for UDP 'hello' messages from other nodes and updates node config."""
         listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        listen_address = ("", NODE_DISCOVERY_PORT)  # Bind to all interfaces
+        listen_address = ("", GLOBAL_COMMS_PORT)  # Bind to all interfaces
         listen_socket.bind(listen_address)
         # print(
-        #     f"Node {self.node_id} listening for hello messages on port {NODE_DISCOVERY_PORT}")
+        #     f"Node {self.node_id} listening for hello messages on port {GLOBAL_COMMS_PORT}")
 
         while True:
             try:
@@ -133,7 +165,7 @@ class FTPServer:
                                              hello_control_port, hello_node_id]
 
                             node_exists = False
-                            
+
                             for existing_node in self.chord_nodes_config:
                                 if existing_node[2] == hello_node_id:  # Check by node_id
                                     node_exists = True
@@ -147,7 +179,7 @@ class FTPServer:
                                         # Update timestamp
                                         existing_node[3] = time.time()
                                     break
-                                
+
                             if not node_exists and hello_node_id != self.node_id:  # Avoid adding self and duplicates
                                 # Add timestamp for new node
                                 new_node_info.append(time.time())
@@ -156,7 +188,7 @@ class FTPServer:
                                     f"Node {self.node_id} discovered new node: {new_node_info}")
                                 print(
                                     f"Current chord_nodes_config: {self.chord_nodes_config}")
-                                
+
                             else:
                                 if hello_node_id != self.node_id:
                                     # print(
@@ -169,6 +201,18 @@ class FTPServer:
                     else:
                         print(
                             f"Node {self.node_id} received invalid hello message - format error: '{message}' from {address}")
+                # Check for our prefix
+                elif message.startswith("FILE_REPLICAS_UPDATE:"):
+                    # Extract the file_replicas string
+                    replicas_str = message[len("FILE_REPLICAS_UPDATE:"):]
+                    updated_replicas = self.deserialize_file_replicas(
+                        replicas_str)  # Deserialize it back to dict
+                    if updated_replicas:
+                        # Merge with local file_replicas
+                        self.merge_file_replicas(updated_replicas)
+                        print(
+                            f"Node {self.node_id}: Received and merged file_replicas update from {address}.")
+                        print("Current file_replicas:", self.file_replicas)
                 else:
                     print(
                         f"Node {self.node_id} received non-hello message: '{message}' from {address}")
@@ -176,15 +220,7 @@ class FTPServer:
             except Exception as e:
                 print(
                     f"Error listening for hello messages on Node {self.node_id}: {e}")
-
-    def start_inactive_node_removal_thread(self):
-        """Starts the inactive node removal loop in a separate thread."""
-        thread = threading.Thread(
-            target=self.run_inactive_node_removal_loop, daemon=True)
-        thread.start()
-        print(
-            f"Inactive Node Removal thread started. Checking every {INACTIVE_NODE_TIMEOUT} seconds.")
-
+                
     def run_inactive_node_removal_loop(self):
         """
         Runs a loop that periodically checks and removes inactive nodes
@@ -194,10 +230,10 @@ class FTPServer:
         while True:
             time.sleep(INACTIVE_NODE_TIMEOUT)  # Wait for timeout period
             self.remove_inactive_nodes()
-            
+
     def remove_inactive_nodes(self):
         """Removes inactive nodes from chord_nodes_config based on last hello message time."""
-        print("Checking for inactive nodes...")
+        # print("Checking for inactive nodes...")
         current_time = time.time()
 
         for node_info in self.chord_nodes_config:
@@ -211,13 +247,40 @@ class FTPServer:
                     f"Inactive node found: Node {node_info[2]} (last seen: {node_info[3]})")
                 self.chord_nodes_config.remove(
                     node_info)  # Remove inactive nodes
+                print(
+                    f"Updated chord_nodes_config after remove inactive nodes: {self.chord_nodes_config}")
 
-            print(
-                f"Updated chord_nodes_config after removing inactive nodes: {self.chord_nodes_config}")
-        else:
-            print("No inactive nodes found.")
+    def serialize_file_replicas(self):  # NEW
+        """Serializes the file_replicas dictionary to a string format (filename:node_id1,node_id2,...;...)."""
+        serialized_str = ""
+        for filename, node_ids in self.file_replicas.items():
+            serialized_str += f"{filename}:{','.join(map(str, node_ids))};"
+        return serialized_str.rstrip(';')  # Remove trailing semicolon if any
 
+    def deserialize_file_replicas(self, replicas_str):  # NEW
+        """Deserializes the string representation back to a file_replicas dictionary."""
+        replicas_dict = {}
+        if not replicas_str:  # Handle empty string
+            return replicas_dict
+
+        for item in replicas_str.split(';'):
+            parts = item.split(':', 1)  # Split only once at the first ':'
+            if len(parts) == 2:  # Ensure it has both filename and node_ids
+                filename = parts[0]
+                node_ids_str = parts[1]
+                node_ids = [int(node_id) for node_id in node_ids_str.split(
+                    ',')] if node_ids_str else []  # Handle empty node_ids string
+                replicas_dict[filename] = node_ids
+        return replicas_dict
+
+    def merge_file_replicas(self, updated_replicas):  # NEW
+        """Merges the received file_replicas update into the local file_replicas.
+           In a simple approach, we can just update the local dictionary with the received one.
+           For more robust merging (handling conflicts or deletions), more complex logic might be needed."""
+        self.file_replicas.update(
+            updated_replicas)  # Simple update/merge strategy
 # Chord methods (No changes needed in Chord logic itself)
+
 
     def get_key(self, filename):
         """
@@ -336,13 +399,12 @@ class FTPServer:
                     temp_file.write(data)
             conn.close()
             print(f"Node {self.node_id}: Finished receiving data to temp file.")
-            client_socket.send(
-                b"226 Data received and stored to temp file.\r\n")
 
             if not is_forwarded_request:
+                responsible_node_ids = []  # To store node_ids that are responsible for replicas
                 # Distribute to responsible nodes
                 for node_info in responsible_nodes_info:
-                    node_host, node_control_port, node_id,node_time = node_info
+                    node_host, node_control_port, node_id, node_time = node_info
                     if node_host == self.host and node_control_port == CONTROL_PORT:
                         # Current node is responsible, store locally (copy from temp)
                         print(
@@ -354,6 +416,11 @@ class FTPServer:
                             shutil.copy2(temp_file_path, final_file_path)
                             print(
                                 f"Node {self.node_id}: Successfully stored locally from temp file: {filename}")
+                            # Only add if local storage was successful
+                            if os.path.exists(final_file_path):
+                                responsible_node_ids.append(
+                                    node_id)  # Add own node_id
+                                print("Responsible node_ids:", responsible_node_ids)
 
                         except Exception as e:
                             print(
@@ -409,6 +476,9 @@ class FTPServer:
                             if response.startswith("226"):
                                 print(
                                     f"Node {self.node_id}: Successfully forwarded file to node {node_id}.")
+                                responsible_node_ids.append(
+                                    node_id)  # Add forwarded node_id
+                                print("Responsible node_ids:", responsible_node_ids)
                             else:
                                 print(
                                     f"Node {self.node_id}: Failed to forward file to node {node_id}: {response.strip()}")
@@ -416,7 +486,17 @@ class FTPServer:
                         except Exception as e:
                             print(
                                 f"Node {self.node_id}: Error forwarding file to node {node_id} via simplified FTP: {e}")
-                            # client_socket.send(b"550 Failed to store file (forwarding error via simplified FTP).\r\n") # Don't fail client request on one forward fail - replication
+                        
+                # Update file_replicas dictionary AFTER all storage attempts
+                if responsible_node_ids:  # Only update if there were successful replicas
+                    self.file_replicas[filename] = responsible_node_ids
+                    print(
+                        f"Node {self.node_id}: Updated file_replicas for {filename}: {self.file_replicas[filename]}")
+                    print("Current file_replicas:", self.file_replicas)
+                    self.broadcast_file_replicas_update()  # Broadcast the update!
+                else:
+                    print(
+                        f"Node {self.node_id}: No replicas successfully stored for {filename}, file_replicas not updated.")
 
             else:
                 # If it's a forwarded request, just store locally if responsible
@@ -466,7 +546,7 @@ class FTPServer:
         key = self.get_key(filename)  # Calculate Chord key
         responsible_node_info = self.find_successor(
             key, self.chord_nodes_config)
-        responsible_node_host, responsible_node_control_port, responsible_node_id,responsible_node_time = responsible_node_info
+        responsible_node_host, responsible_node_control_port, responsible_node_id, responsible_node_time = responsible_node_info
 
         if responsible_node_host == self.host and responsible_node_control_port == CONTROL_PORT:
             # Current node is responsible, retrieve locally
@@ -567,7 +647,6 @@ class FTPServer:
 # FTP server methods (rest of FTP server methods remain mostly the same)
     # ... (handle_client, handle_user, handle_pwd, handle_cwd, handle_pasv, handle_list, handle_stor, handle_size, handle_mdtm, handle_mkd, handle_retr, handle_dele, handle_rmd, handle_rnfr, handle_rnto, start) ...
 
-
     def handle_client(self, client_socket):
         try:
             client_socket.send(b"220 Welcome to the FTP server.\r\n")
@@ -604,7 +683,7 @@ class FTPServer:
                         data_socket = self.handle_pasv(client_socket)
                     elif cmd == "LIST":
                         self.handle_list(client_socket, data_socket)
-                    elif cmd == "FETCH_LISTING":  
+                    elif cmd == "FETCH_LISTING":
                         self.handle_fetch_listing(client_socket, data_socket)
                     elif cmd == "STOR":
                         self.decentralized_handle_stor(
@@ -697,7 +776,8 @@ class FTPServer:
         Handles the FETCH_LISTING command. Sends the local file listing to the requesting server.
         """
         if not data_socket:
-            client_socket.send(b"425 Use PASV first.\r\n") # Should not happen in server-to-server comms, but for safety.
+            # Should not happen in server-to-server comms, but for safety.
+            client_socket.send(b"425 Use PASV first.\r\n")
             return
 
         client_socket.send(b"150 Here comes the directory listing.\r\n")
@@ -706,7 +786,8 @@ class FTPServer:
             conn, addr = data_socket.accept()
             entries_list = self.get_local_file_listing()
             for entry_info in entries_list:
-                conn.send((entry_info + '\r\n').encode()) # Send each entry info to requesting server
+                # Send each entry info to requesting server
+                conn.send((entry_info + '\r\n').encode())
             conn.close()
             client_socket.send(b"226 Directory send OK.\r\n")
         except Exception as e:
@@ -715,7 +796,7 @@ class FTPServer:
         finally:
             if data_socket:
                 data_socket.close()
-                
+
     def handle_list(self, client_socket, data_socket):
         if not data_socket:
             client_socket.send(b"425 Use PASV first.\r\n")
@@ -732,7 +813,7 @@ class FTPServer:
 
         # 2. Fetch listings from other servers
         for node_config in self.chord_nodes_config:
-            node_host, node_control_port, node_id ,node_time = node_config
+            node_host, node_control_port, node_id, node_time = node_config
             if node_id != self.node_id:  # Don't fetch from self again
                 try:
                     # Establish control connection to the other server
@@ -945,8 +1026,7 @@ class FTPServer:
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:  # Expecting node_id, config_string, host_ip
-        print("""Usage: python server.py <node_id> "<host_ip>" """)
-        print("""docker run -d --name server-develop3 --ip 10.0.11.6 -e PYTHONUNBUFFERED=1 --cap-add NET_ADMIN --network servers -v C:\Franco\Proyects\JackRipper01\Decentralizated-FTP-Server\src\:/app ftp-server 3  "10.0.11.6" """)
+        print("""Read txt""")
         sys.exit(1)
 
     node_id = int(sys.argv[1])
