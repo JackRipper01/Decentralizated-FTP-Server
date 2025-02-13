@@ -163,9 +163,9 @@ class FTPServer:
                 print(
                     f"Error listening for hello messages on Node {self.node_id}: {e}")
 
-# Inter-node communication (server-to-server) methods - REMOVED
 
 # Chord methods (No changes needed in Chord logic itself)
+
     def get_key(self, filename):
         """
         Generates a Chord key for a given filename using SHA1 hash.
@@ -319,7 +319,8 @@ class FTPServer:
                                 socket.AF_INET, socket.SOCK_STREAM)
                             ftp_client_socket.connect(
                                 (node_host, node_control_port))
-                            ftp_client_socket.recv(BUFFER_SIZE)  # Welcome message
+                            ftp_client_socket.recv(
+                                BUFFER_SIZE)  # Welcome message
                             ftp_client_socket.send(b"PASV\r\n")
                             pasv_response = ftp_client_socket.recv(
                                 BUFFER_SIZE).decode()
@@ -344,7 +345,8 @@ class FTPServer:
                                         BUFFER_SIZE)
                                     if not data_to_forward:
                                         break
-                                    ftp_data_socket_client.sendall(data_to_forward)
+                                    ftp_data_socket_client.sendall(
+                                        data_to_forward)
 
                             ftp_data_socket_client.close()
                             response = ftp_client_socket.recv(
@@ -380,7 +382,7 @@ class FTPServer:
                         # Consider better error reporting
                         client_socket.send(
                             b"550 Failed to store forwarded file locally.\r\n")
-                        
+
             # Inform client transfer complete after all distribution attempts
             client_socket.send(
                 b"226 Transfer complete (file distributed to responsible nodes).\r\n")
@@ -512,6 +514,7 @@ class FTPServer:
 # FTP server methods (rest of FTP server methods remain mostly the same)
     # ... (handle_client, handle_user, handle_pwd, handle_cwd, handle_pasv, handle_list, handle_stor, handle_size, handle_mdtm, handle_mkd, handle_retr, handle_dele, handle_rmd, handle_rnfr, handle_rnto, start) ...
 
+
     def handle_client(self, client_socket):
         try:
             client_socket.send(b"220 Welcome to the FTP server.\r\n")
@@ -548,12 +551,14 @@ class FTPServer:
                         data_socket = self.handle_pasv(client_socket)
                     elif cmd == "LIST":
                         self.handle_list(client_socket, data_socket)
+                    elif cmd == "FETCH_LISTING":  # Add this condition
+                        self.handle_fetch_listing(client_socket, data_socket)
                     elif cmd == "STOR":
                         self.decentralized_handle_stor(
                             client_socket, data_socket, arg)
                     elif cmd == "FORWARD_STOR":
                         self.decentralized_handle_stor(
-                            client_socket, data_socket, arg,is_forwarded_request=True,)
+                            client_socket, data_socket, arg, is_forwarded_request=True,)
                     elif cmd == "SIZE":
                         self.handle_size(client_socket, arg)
                     elif cmd == "MDTM":
@@ -634,6 +639,30 @@ class FTPServer:
         client_socket.send(response.encode())
         return data_socket
 
+    def handle_fetch_listing(self, client_socket, data_socket):
+        """
+        Handles the FETCH_LISTING command. Sends the local file listing to the requesting server.
+        """
+        if not data_socket:
+            client_socket.send(b"425 Use PASV first.\r\n") # Should not happen in server-to-server comms, but for safety.
+            return
+
+        client_socket.send(b"150 Here comes the directory listing.\r\n")
+
+        try:
+            conn, addr = data_socket.accept()
+            entries_list = self.get_local_file_listing()
+            for entry_info in entries_list:
+                conn.send((entry_info + '\r\n').encode()) # Send each entry info to requesting server
+            conn.close()
+            client_socket.send(b"226 Directory send OK.\r\n")
+        except Exception as e:
+            print(f"Error in handle_fetch_listing: {e}")
+            client_socket.send(b"425 Can't open data connection.\r\n")
+        finally:
+            if data_socket:
+                data_socket.close()
+                
     def handle_list(self, client_socket, data_socket):
         if not data_socket:
             client_socket.send(b"425 Use PASV first.\r\n")
@@ -641,30 +670,108 @@ class FTPServer:
 
         client_socket.send(b"150 Here comes the directory listing.\r\n")
 
+        unique_listing_entries = set()  # Use a set to store unique entries
+
+        # 1. Get local listing
+        local_listing = self.get_local_file_listing()
+        for entry in local_listing:
+            unique_listing_entries.add(entry)  # Add local entries to the set
+
+        # 2. Fetch listings from other servers
+        for node_config in self.chord_nodes_config:
+            node_host, node_control_port, node_id = node_config
+            if node_id != self.node_id:  # Don't fetch from self again
+                try:
+                    # Establish control connection to the other server
+                    remote_control_socket = socket.socket(
+                        socket.AF_INET, socket.SOCK_STREAM)
+                    remote_control_socket.connect(
+                        (node_host, node_control_port))
+                    remote_control_socket.recv(BUFFER_SIZE)
+
+                    # Send PASV command to remote server
+                    remote_control_socket.send(b"PASV\r\n")
+                    pasv_response = remote_control_socket.recv(
+                        BUFFER_SIZE).decode()
+                    if not pasv_response.startswith("227"):
+                        print(
+                            f"PASV failed on remote server {node_id}: {pasv_response}")
+                        continue
+
+                    # Extract data port
+                    ip_str, port_str = pasv_response.split('(')[1].split(')')[
+                        0].split(',')[-2:]
+                    remote_data_port = int(port_str) + int(ip_str) * 256
+                    remote_data_host = node_host
+
+                    # Connect data socket
+                    remote_data_socket_client = socket.socket(
+                        socket.AF_INET, socket.SOCK_STREAM)
+                    remote_data_socket_client.connect(
+                        (remote_data_host, remote_data_port))
+
+                    # Send FETCH_LISTING command
+                    remote_control_socket.send(b"FETCH_LISTING\r\n")
+                    listing_response = remote_control_socket.recv(
+                        BUFFER_SIZE).decode()
+                    if not listing_response.startswith("150"):
+                        print(
+                            f"FETCH_LISTING init failed on remote server {node_id}: {listing_response}")
+                        remote_control_socket.close()
+                        remote_data_socket_client.close()
+                        continue
+
+                    # Receive directory listing
+                    remote_listing = b""
+                    while True:
+                        chunk = remote_data_socket_client.recv(BUFFER_SIZE)
+                        if not chunk:
+                            break
+                        remote_listing += chunk
+
+                    remote_data_socket_client.close()
+                    remote_control_socket.close()
+
+                    # Decode and add remote listing to set
+                    remote_listing_str = remote_listing.decode().strip()
+                    remote_entries = remote_listing_str.split('\r\n')
+                    for entry in remote_entries:  # Add remote entries to the set
+                        if entry:  # Make sure not to add empty strings from split
+                            unique_listing_entries.add(entry)
+
+                    print(f"Fetched listing from node {node_id}")
+
+                except Exception as e:
+                    print(f"Error fetching listing from node {node_id}: {e}")
+                    continue
+
         try:
-            conn, addr = data_socket.accept()  # Accept incoming connection from client
-            # List all entries in current directory
-            entries = os.listdir(self.current_dir)
-            for entry in entries:
-                full_path = os.path.join(self.current_dir, entry)
-                if os.path.isdir(full_path):
-                    # Format for directories
-                    file_info = f'drwxr-xr-x 1 owner group {os.stat(full_path).st_size} {time.strftime("%b %d %H:%M", time.gmtime(os.stat(full_path).st_mtime))} {entry}\r\n'
-                else:
-                    # Format for files
-                    file_info = f'-rw-r--r-- 1 owner group {os.stat(full_path).st_size} {time.strftime("%b %d %H:%M", time.gmtime(os.stat(full_path).st_mtime))} {entry}\r\n'
-
-                conn.send(file_info.encode())  # Send each entry info to client
-
-            conn.close()  # Close data connection after sending all entries
-            # Send completion response
+            conn, addr = data_socket.accept()
+            # Iterate through the set of unique entries and send them
+            for entry_info in unique_listing_entries:
+                conn.send((entry_info + '\r\n').encode())
+            conn.close()
             client_socket.send(b"226 Directory send OK.\r\n")
+
         except Exception as e:
-            print(f"Error in LIST: {e}")
+            print(f"Error sending combined listing to client: {e}")
             client_socket.send(b"425 Can't open data connection.\r\n")
         finally:
             if data_socket:
-                data_socket.close()  # Ensure data socket is closed
+                data_socket.close()
+
+    def get_local_file_listing(self):
+        """
+        Returns a list of filenames and foldernames in the current directory
+        of this server.
+        """
+        entries_list = []
+        entries = os.listdir(self.current_dir)
+        for entry in entries:
+            if entry == "temp_downloads":
+                continue  # Skip temp_downloads directory
+            entries_list.append(entry)  # Just append the name
+        return entries_list
 
     def handle_stor(self, client_socket, data_socket, filename):
         if not data_socket:
