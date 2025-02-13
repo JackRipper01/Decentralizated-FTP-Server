@@ -93,7 +93,7 @@ class FTPServer:
     def start_node_discovery_listener(self):
         """Starts the node discovery listener thread."""
         thread = threading.Thread(
-            target=self.listen_for_hello_messages, daemon=True)
+            target=self.listen_for_server_messages, daemon=True)
         thread.start()
         print(f"Node Discovery Listener thread started.")
 
@@ -141,7 +141,7 @@ class FTPServer:
         broadcast_socket.close()
         print(f"Node {self.node_id}: Broadcasted file_replicas update.")
         
-    def listen_for_hello_messages(self):
+    def listen_for_server_messages(self):
         """Listens for UDP 'hello' messages from other nodes and updates node config."""
         listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         listen_address = ("", GLOBAL_COMMS_PORT)  # Bind to all interfaces
