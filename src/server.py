@@ -342,7 +342,7 @@ class FTPServer:
             if not is_forwarded_request:
                 # Distribute to responsible nodes
                 for node_info in responsible_nodes_info:
-                    node_host, node_control_port, node_id = node_info
+                    node_host, node_control_port, node_id,node_time = node_info
                     if node_host == self.host and node_control_port == CONTROL_PORT:
                         # Current node is responsible, store locally (copy from temp)
                         print(
@@ -466,7 +466,7 @@ class FTPServer:
         key = self.get_key(filename)  # Calculate Chord key
         responsible_node_info = self.find_successor(
             key, self.chord_nodes_config)
-        responsible_node_host, responsible_node_control_port, responsible_node_id = responsible_node_info
+        responsible_node_host, responsible_node_control_port, responsible_node_id,responsible_node_time = responsible_node_info
 
         if responsible_node_host == self.host and responsible_node_control_port == CONTROL_PORT:
             # Current node is responsible, retrieve locally
@@ -732,7 +732,7 @@ class FTPServer:
 
         # 2. Fetch listings from other servers
         for node_config in self.chord_nodes_config:
-            node_host, node_control_port, node_id = node_config
+            node_host, node_control_port, node_id ,node_time = node_config
             if node_id != self.node_id:  # Don't fetch from self again
                 try:
                     # Establish control connection to the other server
