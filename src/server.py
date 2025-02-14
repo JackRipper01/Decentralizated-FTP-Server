@@ -49,11 +49,11 @@ class FTPServer:
                        self.node_id, time.time()]  # timestamp
         self.chord_nodes_config.append(self_config)
 
-        # Dictionary to track file replicas: {filename: [node_id1, node_id2, node_id3]}
+        # Dictionary to track file replicas: {Key: Full Path of File including filename , Value: [node_id1, node_id2, node_id3]}
         self.file_replicas = {}
         self.update_file_replicas_on_startup()
         # Broadcast the updated file_replicas to other nodes
-        self.broadcast_file_replicas_update()
+        self.broadcast_file_replicas_merge()
         # Log it
         print(f"Node {self.node_id} initialized with self config: {self_config}")
 
@@ -74,21 +74,25 @@ class FTPServer:
             for filename in files:
                 # Construct full file path
                 file_path = os.path.join(root, filename)
-                # Now process each file as before
-                if filename not in self.file_replicas:
-                    self.file_replicas[filename] = [self.node_id]
+                # Construct relative file path
+                relative_file_path = os.path.relpath(
+                    file_path, self.resources_dir)
+
+                # Now process each file as before, but use relative_file_path as key
+                if relative_file_path not in self.file_replicas:
+                    self.file_replicas[relative_file_path] = [self.node_id]
                     print(
-                        f"Registered file '{filename}' in file_replicas for node {self.node_id}")
-                elif self.node_id not in self.file_replicas[filename]:
-                    self.file_replicas[filename].append(self.node_id)
+                        f"Registered file '{relative_file_path}' in file_replicas for node {self.node_id}")
+                elif self.node_id not in self.file_replicas[relative_file_path]:
+                    self.file_replicas[relative_file_path].append(self.node_id)
                     print(
-                        f"Added node {self.node_id} to replicas for existing file '{filename}'")
+                        f"Added node {self.node_id} to replicas for existing file '{relative_file_path}'")
                 else:
                     print(
-                        f"File '{filename}' already registered for node {self.node_id} in file_replicas.")
+                        f"File '{relative_file_path}' already registered for node {self.node_id} in file_replicas.")
         print("Recursive file replicas update on startup complete.")
         print(f"Current file_replicas: {self.file_replicas}")
-        
+
     def parse_node_config_string(self, config_str):
         """Parses the comma-separated node config string."""
         if not config_str:
@@ -153,15 +157,15 @@ class FTPServer:
                     f"Error broadcasting hello message from Node {self.node_id}: {e}")
             time.sleep(NODE_DISCOVERY_INTERVAL)  # Broadcast every N seconds
 
-    def broadcast_file_replicas_update(self):
-        """Broadcasts a UDP message with the current file_replicas data."""
+    def broadcast_file_replicas_merge(self):
+        """Broadcasts a UDP message to add node ids to all other file_replicas of other servers."""
         broadcast_socket = socket.socket(
             socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         broadcast_socket.bind(('', 0))  # Bind to any available port
 
         message = self.serialize_file_replicas()  # Serialize file_replicas to string
-        message = f"FILE_REPLICAS_UPDATE:{message}".encode(
+        message = f"FILE_REPLICAS_MERGE:{message}".encode(
             'utf-8')  # Add a prefix
 
         for _ in range(3):  # Send multiple times for reliability in UDP
@@ -170,8 +174,27 @@ class FTPServer:
             time.sleep(0.1)  # small delay between broadcasts
 
         broadcast_socket.close()
-        print(f"Node {self.node_id}: Broadcasted file_replicas update.")
+        print(f"Node {self.node_id}: Broadcasted file_replicas merge.")
 
+    def broadcast_file_replicas_delete(self, file_path):
+        """Broadcasts a UDP message to delete node ids from all other file_replicas of other servers."""
+        broadcast_socket = socket.socket(
+            socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        broadcast_socket.bind(('', 0))  # Bind to any available port
+
+        message_payload = file_path # the file_path to be deleted from replicas
+        message = f"FILE_REPLICAS_DELETE:{message_payload}".encode(
+            'utf-8')  # Add a delete prefix
+
+        for _ in range(3):  # Send multiple times for reliability in UDP
+            broadcast_socket.sendto(
+                message, ('<broadcast>', GLOBAL_COMMS_PORT))
+            time.sleep(0.1)  # small delay between broadcasts
+
+        broadcast_socket.close()
+        print(f"Node {self.node_id}: Broadcasted file_replicas delete for file: {file_path}")
+        
     def listen_for_server_messages(self):
         """Listens for UDP 'hello' and 'file replicas update' messages from other nodes and updates node config."""
         listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -215,7 +238,7 @@ class FTPServer:
                                 # Add timestamp for new node
                                 new_node_info.append(time.time())
                                 self.chord_nodes_config.append(new_node_info)
-                                self.broadcast_file_replicas_update()
+                                self.broadcast_file_replicas_merge()
                                 print(
                                     f"Node {self.node_id} discovered new node: {new_node_info}")
                                 print(
@@ -234,17 +257,38 @@ class FTPServer:
                         print(
                             f"Node {self.node_id} received invalid hello message - format error: '{message}' from {address}")
                 # Check for our prefix
-                elif message.startswith("FILE_REPLICAS_UPDATE:"):
+                elif message.startswith("FILE_REPLICAS_MERGE:"):
                     # Extract the file_replicas string
-                    replicas_str = message[len("FILE_REPLICAS_UPDATE:"):]
+                    replicas_str = message[len("FILE_REPLICAS_MERGE:"):]
                     updated_replicas = self.deserialize_file_replicas(
                         replicas_str)  # Deserialize it back to dict
                     if updated_replicas:
-                        # Update file_replicas
-                        self.file_replicas.update(updated_replicas)
+                        # Merge file_replicas instead of overwriting
+                        for file_path, updated_node_ids in updated_replicas.items():
+                            if file_path in self.file_replicas:
+                                # Merge lists, avoiding duplicates (using sets for efficiency)
+                                existing_node_ids = set(
+                                    self.file_replicas[file_path])
+                                new_node_ids = set(updated_node_ids)
+                                merged_node_ids = list(existing_node_ids.union(
+                                    new_node_ids))  # Convert back to list if needed
+                                self.file_replicas[file_path] = merged_node_ids
+                            else:
+                                # File path not in current replicas, add it directly
+                                self.file_replicas[file_path] = updated_node_ids
                         print(
                             f"Node {self.node_id}: Received and merged file_replicas update from {address}.")
                         print("Current file_replicas:", self.file_replicas)
+                elif message.startswith("FILE_REPLICAS_DELETE:"):
+                    file_path_to_delete = message[len(
+                        "FILE_REPLICAS_DELETE:"):]
+                    if file_path_to_delete in self.file_replicas:
+                        del self.file_replicas[file_path_to_delete]
+                        print(
+                            f"Node {self.node_id}: Received file_replicas delete for file: {file_path_to_delete}. Updated file_replicas: {self.file_replicas}")
+                    else:
+                        print(
+                            f"Node {self.node_id}: Received file_replicas delete for file: {file_path_to_delete}, but file not found in local replicas.")
                 else:
                     print(
                         f"Node {self.node_id} received non-hello message: '{message}' from {address}")
@@ -282,14 +326,14 @@ class FTPServer:
                 print(
                     f"Updated chord_nodes_config after remove inactive nodes: {self.chord_nodes_config}")
 
-    def serialize_file_replicas(self):  
+    def serialize_file_replicas(self):
         """Serializes the file_replicas dictionary to a string format (filename:node_id1,node_id2,...;...)."""
         serialized_str = ""
-        for filename, node_ids in self.file_replicas.items():
-            serialized_str += f"{filename}:{','.join(map(str, node_ids))};"
+        for file_path, node_ids in self.file_replicas.items():  # file_path is now relative
+            serialized_str += f"{file_path}:{','.join(map(str, node_ids))};"
         return serialized_str.rstrip(';')  # Remove trailing semicolon if any
 
-    def deserialize_file_replicas(self, replicas_str): 
+    def deserialize_file_replicas(self, replicas_str):
         """Deserializes the string representation back to a file_replicas dictionary."""
         replicas_dict = {}
         if not replicas_str:  # Handle empty string
@@ -298,11 +342,12 @@ class FTPServer:
         for item in replicas_str.split(';'):
             parts = item.split(':', 1)  # Split only once at the first ':'
             if len(parts) == 2:  # Ensure it has both filename and node_ids
-                filename = parts[0]
+                file_path = parts[0]  # file_path is now relative
                 node_ids_str = parts[1]
                 node_ids = [int(node_id) for node_id in node_ids_str.split(
                     ',')] if node_ids_str else []  # Handle empty node_ids string
-                replicas_dict[filename] = node_ids
+                # file_path is now relative
+                replicas_dict[file_path] = node_ids
         return replicas_dict
 
 
@@ -518,11 +563,16 @@ class FTPServer:
 
                 # Update file_replicas dictionary AFTER all storage attempts
                 if responsible_node_ids:  # Only update if there were successful replicas
-                    self.file_replicas[filename] = responsible_node_ids
+                    final_file_path = os.path.join(self.current_dir, filename)
+                    relative_file_path = os.path.relpath(
+                        final_file_path, self.resources_dir)  # Get relative path here
+
+                    # Use relative path as key
+                    self.file_replicas[relative_file_path] = responsible_node_ids
                     print(
-                        f"Node {self.node_id}: Updated file_replicas for {filename}: {self.file_replicas[filename]}")
+                        f"Node {self.node_id}: Updated file_replicas for {relative_file_path}: {self.file_replicas[relative_file_path]}")
                     print("Current file_replicas:", self.file_replicas)
-                    self.broadcast_file_replicas_update()  # Broadcast the update!
+                    self.broadcast_file_replicas_merge()  # Broadcast the update!
                 else:
                     print(
                         f"Node {self.node_id}: No replicas successfully stored for {filename}, file_replicas not updated.")
@@ -1030,8 +1080,14 @@ class FTPServer:
         Handles the DELE command in a decentralized manner.
         Deletes the file from all servers that have a replica.
         """
-        if filename in self.file_replicas:
-            replica_nodes = self.file_replicas[filename]
+        filepath = os.path.join(
+            self.current_dir, filename)  # Construct full file path here
+        relative_file_path = os.path.relpath(
+            filepath, self.resources_dir)  # Get relative path
+
+        if relative_file_path in self.file_replicas:  # Use relative_file_path as key
+            # Use relative_file_path as key
+            replica_nodes = self.file_replicas[relative_file_path]
             print(f"File {filename} replicas found at nodes: {replica_nodes}")
             # Iterate over a copy to allow modification
             for node_id in list(replica_nodes):
@@ -1070,7 +1126,7 @@ class FTPServer:
 
             # Delete the file from the current server as well
             try:
-                filepath = os.path.join(self.current_dir, filename)
+
                 if os.path.exists(filepath):
                     os.remove(filepath)
                     print(f"File {filename} deleted locally.")
@@ -1078,14 +1134,10 @@ class FTPServer:
                     print(f"File {filename} not found locally.")
 
                 # Update file_replicas dictionary
-                if filename in self.file_replicas:
-                    if self.node_id in self.file_replicas[filename]:
-                        self.file_replicas[filename].remove(self.node_id)
-                        # If no replicas left
-                        if not self.file_replicas[filename]:
-                            del self.file_replicas[filename]
-                        self.broadcast_file_replicas_update()  # Broadcast changes
-
+                if relative_file_path in self.file_replicas:  # Use relative_file_path as key
+                    del self.file_replicas[relative_file_path]
+                    self.broadcast_file_replicas_delete(relative_file_path)
+                    
                 client_socket.send(b"250 File deleted successfully.\r\n")
 
             except Exception as e:
@@ -1096,7 +1148,6 @@ class FTPServer:
             try:
                 print(
                     "File not tracked in replicas, attempt local delete anyway or send error")
-                filepath = os.path.join(self.current_dir, filename)
                 if os.path.exists(filepath):
                     os.remove(filepath)
                     client_socket.send(
