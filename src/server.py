@@ -51,7 +51,9 @@ class FTPServer:
 
         # Dictionary to track file replicas: {filename: [node_id1, node_id2, node_id3]}
         self.file_replicas = {}
-
+        self.update_file_replicas_on_startup()
+        # Broadcast the updated file_replicas to other nodes
+        self.broadcast_file_replicas_update()
         # Log it
         print(f"Node {self.node_id} initialized with self config: {self_config}")
 
@@ -59,6 +61,34 @@ class FTPServer:
         self.start_listener()
         self.start_inactive_node_removal_thread()
 
+    def update_file_replicas_on_startup(self):
+        """
+        Scans the server's resource directory and all subdirectories,
+        updating the file_replicas dictionary for all files found.
+        This is intended to be run on server startup.
+        """
+        print("Updating file replicas on startup (recursive scan)...")
+        # os.walk returns (root, directories, files) for each directory
+        for root, _, files in os.walk(self.resources_dir):
+            # Iterate through files in the current directory (root)
+            for filename in files:
+                # Construct full file path
+                file_path = os.path.join(root, filename)
+                # Now process each file as before
+                if filename not in self.file_replicas:
+                    self.file_replicas[filename] = [self.node_id]
+                    print(
+                        f"Registered file '{filename}' in file_replicas for node {self.node_id}")
+                elif self.node_id not in self.file_replicas[filename]:
+                    self.file_replicas[filename].append(self.node_id)
+                    print(
+                        f"Added node {self.node_id} to replicas for existing file '{filename}'")
+                else:
+                    print(
+                        f"File '{filename}' already registered for node {self.node_id} in file_replicas.")
+        print("Recursive file replicas update on startup complete.")
+        print(f"Current file_replicas: {self.file_replicas}")
+        
     def parse_node_config_string(self, config_str):
         """Parses the comma-separated node config string."""
         if not config_str:
@@ -252,14 +282,14 @@ class FTPServer:
                 print(
                     f"Updated chord_nodes_config after remove inactive nodes: {self.chord_nodes_config}")
 
-    def serialize_file_replicas(self):  # NEW
+    def serialize_file_replicas(self):  
         """Serializes the file_replicas dictionary to a string format (filename:node_id1,node_id2,...;...)."""
         serialized_str = ""
         for filename, node_ids in self.file_replicas.items():
             serialized_str += f"{filename}:{','.join(map(str, node_ids))};"
         return serialized_str.rstrip(';')  # Remove trailing semicolon if any
 
-    def deserialize_file_replicas(self, replicas_str):  # NEW
+    def deserialize_file_replicas(self, replicas_str): 
         """Deserializes the string representation back to a file_replicas dictionary."""
         replicas_dict = {}
         if not replicas_str:  # Handle empty string
