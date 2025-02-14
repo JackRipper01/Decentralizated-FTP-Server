@@ -89,7 +89,7 @@ class FTPServer:
         print(f"Node Discovery Broadcast thread started.")
 
     def start_listener(self):
-        """Starts the node discovery listener thread."""
+        """Starts the listener thread."""
         thread = threading.Thread(
             target=self.listen_for_server_messages, daemon=True)
         thread.start()
@@ -143,7 +143,7 @@ class FTPServer:
         print(f"Node {self.node_id}: Broadcasted file_replicas update.")
 
     def listen_for_server_messages(self):
-        """Listens for UDP 'hello' messages from other nodes and updates node config."""
+        """Listens for UDP 'hello' and 'file replicas update' messages from other nodes and updates node config."""
         listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         listen_address = ("", GLOBAL_COMMS_PORT)  # Bind to all interfaces
         listen_socket.bind(listen_address)
@@ -185,6 +185,7 @@ class FTPServer:
                                 # Add timestamp for new node
                                 new_node_info.append(time.time())
                                 self.chord_nodes_config.append(new_node_info)
+                                self.broadcast_file_replicas_update()
                                 print(
                                     f"Node {self.node_id} discovered new node: {new_node_info}")
                                 print(
