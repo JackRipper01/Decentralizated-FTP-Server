@@ -56,11 +56,9 @@ class FTPServer:
         print(f"Node {self.node_id} initialized with self config: {self_config}")
 
         self.start_node_discovery_broadcast()
-        self.start_node_discovery_listener()
+        self.start_listener()
         self.start_inactive_node_removal_thread()
-        self.start_file_replicas_listener()
-        
-        
+
     def parse_node_config_string(self, config_str):
         """Parses the comma-separated node config string."""
         if not config_str:
@@ -90,7 +88,7 @@ class FTPServer:
         thread.start()
         print(f"Node Discovery Broadcast thread started.")
 
-    def start_node_discovery_listener(self):
+    def start_listener(self):
         """Starts the node discovery listener thread."""
         thread = threading.Thread(
             target=self.listen_for_server_messages, daemon=True)
@@ -104,7 +102,7 @@ class FTPServer:
         thread.start()
         print(
             f"Inactive Node Removal thread started. Checking every {INACTIVE_NODE_TIMEOUT} seconds.")
-        
+
     def broadcast_hello_message(self):
         """Periodically broadcasts a UDP 'hello' message with node information."""
         broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -127,20 +125,23 @@ class FTPServer:
 
     def broadcast_file_replicas_update(self):
         """Broadcasts a UDP message with the current file_replicas data."""
-        broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        broadcast_socket = socket.socket(
+            socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        broadcast_socket.bind(('', 0)) # Bind to any available port
+        broadcast_socket.bind(('', 0))  # Bind to any available port
 
-        message = self.serialize_file_replicas() # Serialize file_replicas to string
-        message = f"FILE_REPLICAS_UPDATE:{message}".encode('utf-8') # Add a prefix
+        message = self.serialize_file_replicas()  # Serialize file_replicas to string
+        message = f"FILE_REPLICAS_UPDATE:{message}".encode(
+            'utf-8')  # Add a prefix
 
-        for _ in range(3): # Send multiple times for reliability in UDP
-            broadcast_socket.sendto(message, ('<broadcast>', GLOBAL_COMMS_PORT))
-            time.sleep(0.1) # small delay between broadcasts
+        for _ in range(3):  # Send multiple times for reliability in UDP
+            broadcast_socket.sendto(
+                message, ('<broadcast>', GLOBAL_COMMS_PORT))
+            time.sleep(0.1)  # small delay between broadcasts
 
         broadcast_socket.close()
         print(f"Node {self.node_id}: Broadcasted file_replicas update.")
-        
+
     def listen_for_server_messages(self):
         """Listens for UDP 'hello' messages from other nodes and updates node config."""
         listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -208,8 +209,8 @@ class FTPServer:
                     updated_replicas = self.deserialize_file_replicas(
                         replicas_str)  # Deserialize it back to dict
                     if updated_replicas:
-                        # Merge with local file_replicas
-                        self.merge_file_replicas(updated_replicas)
+                        # Update file_replicas
+                        self.file_replicas.update(updated_replicas)
                         print(
                             f"Node {self.node_id}: Received and merged file_replicas update from {address}.")
                         print("Current file_replicas:", self.file_replicas)
@@ -220,7 +221,7 @@ class FTPServer:
             except Exception as e:
                 print(
                     f"Error listening for hello messages on Node {self.node_id}: {e}")
-                
+
     def run_inactive_node_removal_loop(self):
         """
         Runs a loop that periodically checks and removes inactive nodes
@@ -273,12 +274,7 @@ class FTPServer:
                 replicas_dict[filename] = node_ids
         return replicas_dict
 
-    def merge_file_replicas(self, updated_replicas):  # NEW
-        """Merges the received file_replicas update into the local file_replicas.
-           In a simple approach, we can just update the local dictionary with the received one.
-           For more robust merging (handling conflicts or deletions), more complex logic might be needed."""
-        self.file_replicas.update(
-            updated_replicas)  # Simple update/merge strategy
+
 # Chord methods (No changes needed in Chord logic itself)
 
 
@@ -420,7 +416,8 @@ class FTPServer:
                             if os.path.exists(final_file_path):
                                 responsible_node_ids.append(
                                     node_id)  # Add own node_id
-                                print("Responsible node_ids:", responsible_node_ids)
+                                print("Responsible node_ids:",
+                                      responsible_node_ids)
 
                         except Exception as e:
                             print(
@@ -478,7 +475,8 @@ class FTPServer:
                                     f"Node {self.node_id}: Successfully forwarded file to node {node_id}.")
                                 responsible_node_ids.append(
                                     node_id)  # Add forwarded node_id
-                                print("Responsible node_ids:", responsible_node_ids)
+                                print("Responsible node_ids:",
+                                      responsible_node_ids)
                             else:
                                 print(
                                     f"Node {self.node_id}: Failed to forward file to node {node_id}: {response.strip()}")
@@ -486,7 +484,7 @@ class FTPServer:
                         except Exception as e:
                             print(
                                 f"Node {self.node_id}: Error forwarding file to node {node_id} via simplified FTP: {e}")
-                        
+
                 # Update file_replicas dictionary AFTER all storage attempts
                 if responsible_node_ids:  # Only update if there were successful replicas
                     self.file_replicas[filename] = responsible_node_ids
@@ -643,6 +641,21 @@ class FTPServer:
                 if data_socket:
                     data_socket.close()
 
+    def decentralized_handle_dele(self, client_socket, filename):
+        """
+        Handles the FORWARD_DELE command to delete a file locally.
+        """
+        try:
+            filepath = os.path.join(self.current_dir, filename)
+            if os.path.exists(filepath):
+                os.remove(filepath)
+                client_socket.send(
+                    b"250 File deleted successfully (forwarded).\r\n")
+            else:
+                client_socket.send(b"550 File not found (forwarded).\r\n")
+        except Exception as e:
+            print(f"Error in FORWARD_DELE: {e}")
+            client_socket.send(b"550 Failed to delete file (forwarded).\r\n")
 
 # FTP server methods (rest of FTP server methods remain mostly the same)
     # ... (handle_client, handle_user, handle_pwd, handle_cwd, handle_pasv, handle_list, handle_stor, handle_size, handle_mdtm, handle_mkd, handle_retr, handle_dele, handle_rmd, handle_rnfr, handle_rnto, start) ...
@@ -691,6 +704,8 @@ class FTPServer:
                     elif cmd == "FORWARD_STOR":
                         self.decentralized_handle_stor(
                             client_socket, data_socket, arg, is_forwarded_request=True)
+                    elif cmd == "FORWARD_DELE":
+                        self.decentralized_handle_dele(client_socket, arg)
                     elif cmd == "SIZE":
                         self.handle_size(client_socket, arg)
                     elif cmd == "MDTM":
@@ -980,12 +995,89 @@ class FTPServer:
                 data_socket.close()
 
     def handle_dele(self, client_socket, filename):
-        try:
-            os.remove(os.path.join(self.current_dir, filename))
-            client_socket.send(b"250 File deleted successfully.\r\n")
-        except Exception as e:
-            print(f"Error in DELE: {e}")
-            client_socket.send(b"550 Failed to delete file.\r\n")
+        """
+        Handles the DELE command in a decentralized manner.
+        Deletes the file from all servers that have a replica.
+        """
+        if filename in self.file_replicas:
+            replica_nodes = self.file_replicas[filename]
+            print(f"File {filename} replicas found at nodes: {replica_nodes}")
+            # Iterate over a copy to allow modification
+            for node_id in list(replica_nodes):
+                if node_id != self.node_id:
+                    target_node_info = None
+                    for node_config in self.chord_nodes_config:
+                        if node_config[2] == node_id:  # node_config[2] is node_id
+                            target_node_info = node_config
+                            break
+                    if target_node_info:
+                        target_host = target_node_info[0]
+                        target_port = target_node_info[1]
+                        try:
+                            forward_socket = socket.socket(
+                                socket.AF_INET, socket.SOCK_STREAM)
+                            forward_socket.connect(
+                                (target_host, CONTROL_PORT))  # Use CONTROL_PORT
+                            # Welcome
+                            forward_socket.recv(BUFFER_SIZE)  # Welcome message
+                            forward_socket.send(
+                                f"FORWARD_DELE {filename}\r\n".encode())
+                            response = forward_socket.recv(
+                                BUFFER_SIZE).decode().strip()
+                            print(
+                                f"Response from node {node_id} for FORWARD_DELE: {response}")
+                            if response.startswith("250"):
+                                pass  # Successfully forwarded deletion
+                            else:
+                                print(
+                                    f"FORWARD_DELE to node {node_id} failed.")
+                        except Exception as e:
+                            print(
+                                f"Error forwarding DELE to node {node_id}: {e}")
+                        finally:
+                            forward_socket.close()
+
+            # Delete the file from the current server as well
+            try:
+                filepath = os.path.join(self.current_dir, filename)
+                if os.path.exists(filepath):
+                    os.remove(filepath)
+                    print(f"File {filename} deleted locally.")
+                else:
+                    print(f"File {filename} not found locally.")
+
+                # Update file_replicas dictionary
+                if filename in self.file_replicas:
+                    if self.node_id in self.file_replicas[filename]:
+                        self.file_replicas[filename].remove(self.node_id)
+                        # If no replicas left
+                        if not self.file_replicas[filename]:
+                            del self.file_replicas[filename]
+                        self.broadcast_file_replicas_update()  # Broadcast changes
+
+                client_socket.send(b"250 File deleted successfully.\r\n")
+
+            except Exception as e:
+                print(f"Error deleting file locally in DELE: {e}")
+                client_socket.send(b"550 Failed to delete file.\r\n")
+
+        else:  # File not tracked in replicas, attempt local delete anyway or send error. Let's attempt local delete for robustness.
+            try:
+                print(
+                    "File not tracked in replicas, attempt local delete anyway or send error")
+                filepath = os.path.join(self.current_dir, filename)
+                if os.path.exists(filepath):
+                    os.remove(filepath)
+                    client_socket.send(
+                        b"250 File deleted successfully (local only, not tracked for replication).\r\n")
+                else:
+                    client_socket.send(
+                        b"550 File not found (not tracked for replication).\r\n")
+            except Exception as e:
+                print(
+                    f"Error deleting file locally in DELE (not tracked): {e}")
+                client_socket.send(
+                    b"550 Failed to delete file (not tracked for replication).\r\n")
 
     def handle_rmd(self, client_socket, dirname):
         try:
