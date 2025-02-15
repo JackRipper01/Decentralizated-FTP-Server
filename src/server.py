@@ -1003,28 +1003,6 @@ class FTPServer:
             entries_list.append(entry)  # Just append the name
         return entries_list
 
-    def handle_stor(self, client_socket, data_socket, filename):
-        if not data_socket:
-            client_socket.send(b"425 Use PASV first.\r\n")
-            return
-
-        try:
-            client_socket.send(b"150 Ok to send data.\r\n")
-            conn, addr = data_socket.accept()
-            with open(os.path.join(self.current_dir, filename), 'wb') as file:
-                while True:
-                    data = conn.recv(BUFFER_SIZE)
-                    if not data:
-                        break
-                    file.write(data)
-            conn.close()
-            client_socket.send(b"226 Transfer complete.\r\n")
-        except Exception as e:
-            print(f"Error in STOR: {e}")
-            client_socket.send(b"550 Failed to store file.\r\n")
-        finally:
-            if data_socket:
-                data_socket.close()
 
     def handle_size(self, client_socket, filename):
         try:
@@ -1052,28 +1030,6 @@ class FTPServer:
         except Exception as e:
             client_socket.send(b"550 Failed to create directory.\r\n")
 
-    def handle_retr(self, client_socket, data_socket, filename):
-        if not data_socket:
-            client_socket.send(b"425 Use PASV first.\r\n")
-            return
-
-        try:
-            client_socket.send(b"150 Opening data connection.\r\n")
-            conn, addr = data_socket.accept()
-            with open(os.path.join(self.current_dir, filename), 'rb') as file:
-                while True:
-                    data = file.read(BUFFER_SIZE)
-                    if not data:
-                        break
-                    conn.send(data)
-            conn.close()
-            client_socket.send(b"226 Transfer complete.\r\n")
-        except Exception as e:
-            print(f"Error in RETR: {e}")
-            client_socket.send(b"550 Failed to retrieve file.\r\n")
-        finally:
-            if data_socket:
-                data_socket.close()
 
     def handle_dele(self, client_socket, filename):
         """
