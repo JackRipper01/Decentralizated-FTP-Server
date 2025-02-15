@@ -11,7 +11,9 @@ CONTROL_PORT = 21
 BUFFER_SIZE = 1024
 # Port for server-to-server communication (NOT USED NOW)
 INTER_NODE_PORT = 5000
-GLOBAL_COMMS_PORT = 3000  # Port for UDP global server communication
+HELLO_PORT = 3000  # Port for UDP global server communication
+FILE_REPLICAS_PORT = 3001  # Port for UDP file replicas communication
+FOLDER_REPLICAS_PORT = 3002  # Port for UDP folder replicas communication
 NODE_DISCOVERY_INTERVAL = 2  # Interval in seconds for broadcasting hello messages
 TEMP_DOWNLOAD_DIR_NAME = "temp_downloads"
 # Define timeout, e.g., 3 times the broadcast interval
@@ -49,16 +51,27 @@ class FTPServer:
                        self.node_id, time.time()]  # timestamp
         self.chord_nodes_config.append(self_config)
 
+        self.start_listeners()
+        self.start_node_discovery_broadcast()
+        
         # Dictionary to track file replicas: {Key: Full Path of File including filename , Value: [node_id1, node_id2, node_id3]}
         self.file_replicas = {}
         self.update_file_replicas_on_startup()
         # Broadcast the updated file_replicas to other nodes
         self.broadcast_file_replicas_merge()
+        
+        # Dictionary to track folder replicas: {Key: Full Path of Folder , Value: [node_id1, node_id2, node_id3]}
+        self.folder_replicas = {}
+        self.update_folder_replicas_on_startup()
+        # Broadcast the updated file_replicas to other nodes
+        self.broadcast_folder_replicas_merge()
+        
+        
         # Log it
         print(f"Node {self.node_id} initialized with self config: {self_config}")
 
-        self.start_node_discovery_broadcast()
-        self.start_listener()
+        
+        
         self.start_inactive_node_removal_thread()
 
     def update_file_replicas_on_startup(self):
@@ -93,6 +106,38 @@ class FTPServer:
         print("Recursive file replicas update on startup complete.")
         print(f"Current file_replicas: {self.file_replicas}")
 
+    def update_folder_replicas_on_startup(self):
+        """
+        Scans the server's resource directory and all subdirectories,
+        updating the folder_replicas dictionary for all folders found.
+        This is intended to be run on server startup.
+        """
+        print("Updating folder replicas on startup (recursive scan)...")
+        # os.walk returns (root, directories, files) for each directory
+        for root, directories, _ in os.walk(self.resources_dir):
+            # Iterate through directories in the current directory (root)
+            for directory in directories:
+                # Construct full folder path
+                folder_path = os.path.join(root, directory)
+                # Construct relative folder path
+                relative_folder_path = os.path.relpath(
+                    folder_path, self.resources_dir)
+
+                # Now process each folder as before, but use relative_folder_path as key
+                if relative_folder_path not in self.folder_replicas:
+                    self.folder_replicas[relative_folder_path] = [self.node_id]
+                    print(
+                        f"Registered folder '{relative_folder_path}' in folder_replicas for node {self.node_id}")
+                elif self.node_id not in self.folder_replicas[relative_folder_path]:
+                    self.folder_replicas[relative_folder_path].append(self.node_id)
+                    print(
+                        f"Added node {self.node_id} to replicas for existing folder '{relative_folder_path}'")
+                else:
+                    print(
+                        f"Folder '{relative_folder_path}' already registered for node {self.node_id} in folder_replicas.")
+        print("Recursive folder replicas update on startup complete.")
+        print(f"Current folder_replicas: {self.folder_replicas}")
+        
     def parse_node_config_string(self, config_str):
         """Parses the comma-separated node config string."""
         if not config_str:
@@ -122,12 +167,7 @@ class FTPServer:
         thread.start()
         print(f"Node Discovery Broadcast thread started.")
 
-    def start_listener(self):
-        """Starts the listener thread."""
-        thread = threading.Thread(
-            target=self.listen_for_server_messages, daemon=True)
-        thread.start()
-        print(f"Node Discovery Listener thread started.")
+    
 
     def start_inactive_node_removal_thread(self):
         """Starts the inactive node removal loop in a separate thread."""
@@ -142,8 +182,9 @@ class FTPServer:
         broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         broadcast_socket.setsockopt(
             socket.SOL_SOCKET, socket.SO_BROADCAST, 1)  # Enable broadcasting
+        broadcast_socket.bind(('', 0))  # Bind to any available port
         # Using '<broadcast>'
-        server_address = ('<broadcast>', GLOBAL_COMMS_PORT)
+        server_address = ('<broadcast>', HELLO_PORT)
 
         while True:
             message = f"HELLO,{self.host},{CONTROL_PORT},{self.node_id}"
@@ -170,12 +211,31 @@ class FTPServer:
 
         for _ in range(3):  # Send multiple times for reliability in UDP
             broadcast_socket.sendto(
-                message, ('<broadcast>', GLOBAL_COMMS_PORT))
+                message, ('<broadcast>', FILE_REPLICAS_PORT))
             time.sleep(0.1)  # small delay between broadcasts
 
         broadcast_socket.close()
         print(f"Node {self.node_id}: Broadcasted file_replicas merge.")
 
+    def broadcast_folder_replicas_merge(self):
+        """Broadcasts a UDP message to add node ids to all other folder_replicas of other servers."""
+        broadcast_socket = socket.socket(
+            socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        broadcast_socket.bind(('', 0))
+        
+        message = self.serialize_folder_replicas()  # Serialize folder_replicas to string
+        message = f"FOLDER_REPLICAS_MERGE:{message}".encode(
+            'utf-8')
+        
+        for _ in range(3):  # Send multiple times for reliability in UDP
+            broadcast_socket.sendto(
+                message, ('<broadcast>', FOLDER_REPLICAS_PORT))
+            time.sleep(0.1)
+            
+        broadcast_socket.close()
+        print(f"Node {self.node_id}: Broadcasted folder_replicas merge.")
+        
     def broadcast_file_replicas_delete(self, file_path):
         """Broadcasts a UDP message to delete node ids from all other file_replicas of other servers."""
         broadcast_socket = socket.socket(
@@ -189,19 +249,46 @@ class FTPServer:
 
         for _ in range(3):  # Send multiple times for reliability in UDP
             broadcast_socket.sendto(
-                message, ('<broadcast>', GLOBAL_COMMS_PORT))
+                message, ('<broadcast>', FILE_REPLICAS_PORT))
             time.sleep(0.1)  # small delay between broadcasts
 
         broadcast_socket.close()
         print(f"Node {self.node_id}: Broadcasted file_replicas delete for file: {file_path}")
+    
+    def broadcast_folder_replicas_delete(self, folder_path):
+        """Broadcasts a UDP message to delete node ids from all other folder_replicas of other servers."""
+        broadcast_socket = socket.socket(
+            socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        broadcast_socket.bind(('', 0))
         
-    def listen_for_server_messages(self):
-        """Listens for UDP 'hello' and 'file replicas update' messages from other nodes and updates node config."""
+        message_payload = folder_path # the folder_path to be deleted from replicas
+        message = f"FILE_REPLICAS_DELETE:{message_payload}".encode(
+            'utf-8')
+        
+        for _ in range(3):  # Send multiple times for reliability in UDP
+            broadcast_socket.sendto(
+                message, ('<broadcast>', FOLDER_REPLICAS_PORT))
+            time.sleep(0.1)
+            
+        broadcast_socket.close()
+        print(f"Node {self.node_id}: Broadcasted folder_replicas delete for folder: {folder_path}")
+    
+    def start_listeners(self):
+        """Starts the listener threads."""
+        threading.Thread(target=self.listen_for_hello_messages,
+                         daemon=True).start()
+        threading.Thread(
+            target=self.listen_for_file_replicas_merge, daemon=True).start()
+        threading.Thread(
+            target=self.listen_for_folder_replicas_merge, daemon=True).start()
+        print(f"Node Discovery Listener threads started.")
+        
+    def listen_for_hello_messages(self):
+        """Listens for UDP 'hello' messages from other nodes and updates node config."""
         listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        listen_address = ("", GLOBAL_COMMS_PORT)  # Bind to all interfaces
+        listen_address = ("", HELLO_PORT)
         listen_socket.bind(listen_address)
-        # print(
-        #     f"Node {self.node_id} listening for hello messages on port {GLOBAL_COMMS_PORT}")
 
         while True:
             try:
@@ -219,36 +306,26 @@ class FTPServer:
                                              hello_control_port, hello_node_id]
 
                             node_exists = False
-
                             for existing_node in self.chord_nodes_config:
-                                if existing_node[2] == hello_node_id:  # Check by node_id
+                                if existing_node[2] == hello_node_id:
                                     node_exists = True
-                                    # Defensive check: Ensure timestamp exists
                                     if len(existing_node) < 4:
                                         print(
                                             f"Warning: Node config for node {hello_node_id} is missing timestamp. Adding current timestamp.")
-                                        # Add timestamp if missing
                                         existing_node.append(time.time())
                                     else:
-                                        # Update timestamp
                                         existing_node[3] = time.time()
                                     break
 
-                            if not node_exists and hello_node_id != self.node_id:  # Avoid adding self and duplicates
-                                # Add timestamp for new node
+                            if not node_exists and hello_node_id != self.node_id:
                                 new_node_info.append(time.time())
                                 self.chord_nodes_config.append(new_node_info)
                                 self.broadcast_file_replicas_merge()
+                                self.broadcast_folder_replicas_merge()
                                 print(
                                     f"Node {self.node_id} discovered new node: {new_node_info}")
                                 print(
                                     f"Current chord_nodes_config: {self.chord_nodes_config}")
-
-                            else:
-                                if hello_node_id != self.node_id:
-                                    # print(
-                                    #     f"Node {self.node_id} received hello from existing node: {new_node_info} (or self)")
-                                    a = 3
 
                         except ValueError:
                             print(
@@ -256,46 +333,76 @@ class FTPServer:
                     else:
                         print(
                             f"Node {self.node_id} received invalid hello message - format error: '{message}' from {address}")
-                # Check for our prefix
-                elif message.startswith("FILE_REPLICAS_MERGE:"):
-                    # Extract the file_replicas string
-                    replicas_str = message[len("FILE_REPLICAS_MERGE:"):]
-                    updated_replicas = self.deserialize_file_replicas(
-                        replicas_str)  # Deserialize it back to dict
-                    if updated_replicas:
-                        # Merge file_replicas instead of overwriting
-                        for file_path, updated_node_ids in updated_replicas.items():
-                            if file_path in self.file_replicas:
-                                # Merge lists, avoiding duplicates (using sets for efficiency)
-                                existing_node_ids = set(
-                                    self.file_replicas[file_path])
-                                new_node_ids = set(updated_node_ids)
-                                merged_node_ids = list(existing_node_ids.union(
-                                    new_node_ids))  # Convert back to list if needed
-                                self.file_replicas[file_path] = merged_node_ids
-                            else:
-                                # File path not in current replicas, add it directly
-                                self.file_replicas[file_path] = updated_node_ids
-                        print(
-                            f"Node {self.node_id}: Received and merged file_replicas update from {address}.")
-                        print("Current file_replicas:", self.file_replicas)
-                elif message.startswith("FILE_REPLICAS_DELETE:"):
-                    file_path_to_delete = message[len(
-                        "FILE_REPLICAS_DELETE:"):]
-                    if file_path_to_delete in self.file_replicas:
-                        del self.file_replicas[file_path_to_delete]
-                        print(
-                            f"Node {self.node_id}: Received file_replicas delete for file: {file_path_to_delete}. Updated file_replicas: {self.file_replicas}")
-                    else:
-                        print(
-                            f"Node {self.node_id}: Received file_replicas delete for file: {file_path_to_delete}, but file not found in local replicas.")
-                else:
-                    print(
-                        f"Node {self.node_id} received non-hello message: '{message}' from {address}")
 
             except Exception as e:
                 print(
                     f"Error listening for hello messages on Node {self.node_id}: {e}")
+
+    def listen_for_file_replicas_merge(self):
+        """Listens for UDP 'file replicas merge' messages from other nodes and updates file replicas."""
+        listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        listen_address = ("", FILE_REPLICAS_PORT)
+        listen_socket.bind(listen_address)
+
+        while True:
+            try:
+                data, address = listen_socket.recvfrom(BUFFER_SIZE)
+                message = data.decode().strip()
+                if message.startswith("FILE_REPLICAS_MERGE:"):
+                    replicas_str = message[len("FILE_REPLICAS_MERGE:"):]
+                    updated_replicas = self.deserialize_file_replicas(
+                        replicas_str)
+                    if updated_replicas:
+                        for file_path, updated_node_ids in updated_replicas.items():
+                            if file_path in self.file_replicas:
+                                existing_node_ids = set(
+                                    self.file_replicas[file_path])
+                                new_node_ids = set(updated_node_ids)
+                                merged_node_ids = list(
+                                    existing_node_ids.union(new_node_ids))
+                                self.file_replicas[file_path] = merged_node_ids
+                            else:
+                                self.file_replicas[file_path] = updated_node_ids
+                        print(
+                            f"Node {self.node_id}: Received and merged file_replicas update from {address}.")
+                        print("Current file_replicas:", self.file_replicas)
+
+            except Exception as e:
+                print(
+                    f"Error listening for file replicas merge messages on Node {self.node_id}: {e}")
+
+    def listen_for_folder_replicas_merge(self):
+        """Listens for UDP 'folder replicas merge' messages from other nodes and updates folder replicas."""
+        listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        listen_address = ("", FOLDER_REPLICAS_PORT)
+        listen_socket.bind(listen_address)
+
+        while True:
+            try:
+                data, address = listen_socket.recvfrom(BUFFER_SIZE)
+                message = data.decode().strip()
+                if message.startswith("FOLDER_REPLICAS_MERGE:"):
+                    replicas_str = message[len("FOLDER_REPLICAS_MERGE:"):]
+                    updated_replicas = self.deserialize_folder_replicas(
+                        replicas_str)
+                    if updated_replicas:
+                        for folder_path, updated_node_ids in updated_replicas.items():
+                            if folder_path in self.folder_replicas:
+                                existing_node_ids = set(
+                                    self.folder_replicas[folder_path])
+                                new_node_ids = set(updated_node_ids)
+                                merged_node_ids = list(
+                                    existing_node_ids.union(new_node_ids))
+                                self.folder_replicas[folder_path] = merged_node_ids
+                            else:
+                                self.folder_replicas[folder_path] = updated_node_ids
+                        print(
+                            f"Node {self.node_id}: Received and merged folder_replicas update from {address}.")
+                        print("Current folder_replicas:", self.folder_replicas)
+
+            except Exception as e:
+                print(
+                    f"Error listening for folder replicas merge messages on Node {self.node_id}: {e}")
 
     def run_inactive_node_removal_loop(self):
         """
@@ -333,6 +440,13 @@ class FTPServer:
             serialized_str += f"{file_path}:{','.join(map(str, node_ids))};"
         return serialized_str.rstrip(';')  # Remove trailing semicolon if any
 
+    def serialize_folder_replicas(self):
+        """Serializes the folder_replicas dictionary to a string format (folder_path:node_id1,node_id2,...;...)."""
+        serialized_str = ""
+        for folder_path, node_ids in self.folder_replicas.items():  # folder_path is now relative
+            serialized_str += f"{folder_path}:{','.join(map(str, node_ids))};"
+        return serialized_str.rstrip(';')  # Remove trailing semicolon if any
+    
     def deserialize_file_replicas(self, replicas_str):
         """Deserializes the string representation back to a file_replicas dictionary."""
         replicas_dict = {}
@@ -350,6 +464,22 @@ class FTPServer:
                 replicas_dict[file_path] = node_ids
         return replicas_dict
 
+    def deserialize_folder_replicas(self, replicas_str):
+        """Deserializes the string representation back to a folder_replicas dictionary."""
+        replicas_dict = {}
+        if not replicas_str:  # Handle empty string
+            return replicas_dict
+        
+        for item in replicas_str.split(';'):
+            parts = item.split(':', 1)
+            if len(parts) == 2:
+                folder_path = parts[0]  # folder_path is now relative
+                node_ids_str = parts[1]
+                node_ids = [int(node_id) for node_id in node_ids_str.split(
+                    ',')] if node_ids_str else []
+                
+                replicas_dict[folder_path] = node_ids
+        return replicas_dict
 
 # Chord methods (No changes needed in Chord logic itself)
 
@@ -745,6 +875,7 @@ class FTPServer:
         try:
             client_socket.send(b"220 Welcome to the FTP server.\r\n")
             data_socket = None
+            virtual_current_dir = Path("/")
             while True:
                 try:
                     command = client_socket.recv(BUFFER_SIZE).decode().strip()
@@ -840,7 +971,7 @@ class FTPServer:
         response = f'257 "{self.current_dir}"\r\n'
         client_socket.send(response.encode())
 
-    def handle_cwd(self, client_socket, path):
+    def handle_cwd(self, client_socket,path):
         try:
             # Check if the path is absolute or relative
             if not os.path.isabs(path):
@@ -849,11 +980,14 @@ class FTPServer:
             print(f"Changing directory to {path}")
             os.chdir(path)
             self.current_dir = os.getcwd()
+            # virtual_current_dir = Path(path)
             client_socket.send(b"250 Directory successfully changed.\r\n")
             print(f"Current directory: {self.current_dir}")
+            return self.current_dir
         except Exception as e:
             print(f"Error in CWD: {e}")
             client_socket.send(b"550 Failed to change directory.\r\n")
+            
 
     def handle_pasv(self, client_socket):
         data_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
