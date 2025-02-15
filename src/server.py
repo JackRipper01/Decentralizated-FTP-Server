@@ -896,20 +896,20 @@ class FTPServer:
                         client_socket.send(
                             b"211-Features:\r\n UTF8\r\n211 End\r\n")
                     elif cmd == "PWD":
-                        self.handle_pwd(client_socket)
+                        self.handle_pwd(client_socket,virtual_current_dir)
                     elif cmd == "CWD":
-                        self.handle_cwd(client_socket, arg)
+                        virtual_current_dir=self.handle_cwd(client_socket, arg,virtual_current_dir)
                     elif cmd == "CDUP":
-                        self.handle_cwd(client_socket, Path(
-                            self.current_dir).parent)
+                        virtual_current_dir=self.handle_cwd(client_socket, Path(
+                            self.current_dir).parent,virtual_current_dir)
                     elif cmd == "TYPE":
                         client_socket.send(b"200 Type set to I.\r\n")
                     elif cmd == "PASV":
                         data_socket = self.handle_pasv(client_socket)
                     elif cmd == "LIST":
-                        self.handle_list(client_socket, data_socket)
+                        self.handle_list(client_socket, data_socket,virtual_current_dir)
                     elif cmd == "FETCH_LISTING":
-                        self.handle_fetch_listing(client_socket, data_socket)
+                        self.handle_fetch_listing(client_socket, data_socket,virtual_current_dir)
                     elif cmd == "STOR":
                         self.decentralized_handle_stor(
                             client_socket, data_socket, arg)
@@ -967,26 +967,43 @@ class FTPServer:
     def handle_user(self, client_socket, username):
         return b"331 User name okay, need password.\r\n"
 
-    def handle_pwd(self, client_socket):
-        response = f'257 "{self.current_dir}"\r\n'
+    def handle_pwd(self, client_socket,virtual_current_dir):
+        response = f'257 "{virtual_current_dir}"\r\n'
         client_socket.send(response.encode())
 
-    def handle_cwd(self, client_socket,path):
+    def handle_cwd(self, client_socket, path, virtual_current_dir):
         try:
+            #check case path = ".." and avoir that virtual_current_dir superpases self.server_resource
+            if path == "..":
+                if virtual_current_dir == "/":
+                    client_socket.send(b"550 Directory not allowed.\r\n")
+                    return virtual_current_dir
+                else:
+                    virtual_current_dir = Path(virtual_current_dir).parent
+                    client_socket.send(b"250 Directory successfully changed.\r\n")
+                    return virtual_current_dir
+                
             # Check if the path is absolute or relative
             if not os.path.isabs(path):
-                path = os.path.join(self.current_dir, path)
+                path = os.path.join(virtual_current_dir, path)
 
             print(f"Changing directory to {path}")
-            os.chdir(path)
-            self.current_dir = os.getcwd()
-            # virtual_current_dir = Path(path)
+            virtual_current_dir_path = Path(path).resolve()
+            dir_name = virtual_current_dir_path.name  # extract directory name
+
+            if dir_name not in self.folder_replicas:  # check if directory exists in folder_replicas
+                # send error if not allowed
+                client_socket.send(b"550 Directory not allowed.\r\n")
+                return virtual_current_dir  # return old directory
+
+            virtual_current_dir = virtual_current_dir_path  # only change if allowed
             client_socket.send(b"250 Directory successfully changed.\r\n")
-            print(f"Current directory: {self.current_dir}")
-            return self.current_dir
+            print(f"Current directory: {virtual_current_dir}")
+            return virtual_current_dir
         except Exception as e:
             print(f"Error in CWD: {e}")
             client_socket.send(b"550 Failed to change directory.\r\n")
+            return virtual_current_dir
             
 
     def handle_pasv(self, client_socket):
@@ -1027,7 +1044,7 @@ class FTPServer:
             if data_socket:
                 data_socket.close()
 
-    def handle_list(self, client_socket, data_socket):
+    def handle_list(self, client_socket, data_socket,virtual_current_dir):
         if not data_socket:
             client_socket.send(b"425 Use PASV first.\r\n")
             return
@@ -1036,79 +1053,61 @@ class FTPServer:
 
         unique_listing_entries = set()  # Use a set to store unique entries
 
-        # 1. Get local listing
-        local_listing = self.get_local_file_listing()
-        for entry in local_listing:
-            unique_listing_entries.add(entry)  # Add local entries to the set
 
-        # 2. Fetch listings from other servers
-        for node_config in self.chord_nodes_config:
-            node_host, node_control_port, node_id, node_time = node_config
-            if node_id != self.node_id:  # Don't fetch from self again
-                try:
-                    # Establish control connection to the other server
-                    remote_control_socket = socket.socket(
-                        socket.AF_INET, socket.SOCK_STREAM)
-                    remote_control_socket.connect(
-                        (node_host, node_control_port))
-                    remote_control_socket.recv(BUFFER_SIZE)
+        for folder_path, replica_nodes in self.folder_replicas.items():
+            if str(virtual_current_dir) == "/":
+                # If virtual_current_dir is root, add all top-level files
+                # Check if it's a top-level file (no slashes, or only one and at the start which is already handled as relative path)
+                if "/" not in folder_path:
+                    unique_listing_entries.add(folder_path)
+                continue
+            # Construct a listing entry for each folder in folder_replicas
+            # You can customize the format of this entry as needed.
+            # This example mimics a basic FTP directory listing format.
 
-                    # Send PASV command to remote server
-                    remote_control_socket.send(b"PASV\r\n")
-                    pasv_response = remote_control_socket.recv(
-                        BUFFER_SIZE).decode()
-                    if not pasv_response.startswith("227"):
-                        print(
-                            f"PASV failed on remote server {node_id}: {pasv_response}")
-                        continue
+            # Check if the folder_path is within the virtual_current_dir. example: virtual_current_dir= "/asd", Current folder_replicas: {'temp_downloads': [400, 1], 'asd': [1], 'lol': [1], 'server5': [400]} important to note that all directories are relative path
+            # and put in unique_listing_entries all folders that are relative subfolder of virtual_current_dir
+            # Convert both to string before using string operations
+            print(f"Folder path: {folder_path}")
+            print(f"Virtual current dir: {virtual_current_dir}")
+            print(f"Checking if {folder_path} is a subfolder of {virtual_current_dir}")
+            # Check if folder_path starts with virtual_current_dir + "/"
+            if str(folder_path).startswith(str(virtual_current_dir) + "/"):
+                
+                # Convert to string for slicing and len
+                relative_path = str(folder_path)[
+                    len(str(virtual_current_dir)) + 1:]
+                if "/" not in relative_path:  # Check if there are no more "/" in the relative path, meaning it is a direct subfolder
+                    # Add the folder if it is a direct subfolder
+                    unique_listing_entries.add(folder_path)
+        
+        for file_path, replica_nodes in self.file_replicas.items():
+            if str(virtual_current_dir) == "/":
+                # If virtual_current_dir is root, add all top-level files
+                # Check if it's a top-level file (no slashes, or only one and at the start which is already handled as relative path)
+                if "/" not in str(file_path):
+                    unique_listing_entries.add(file_path)
+                continue
 
-                    # Extract data port
-                    ip_str, port_str = pasv_response.split('(')[1].split(')')[
-                        0].split(',')[-2:]
-                    remote_data_port = int(port_str) + int(ip_str) * 256
-                    remote_data_host = node_host
+            print(f"File path: {file_path}")
+            print(f"Virtual current dir: {virtual_current_dir}")
+            print(f"Checking if {file_path} is in {virtual_current_dir}")
 
-                    # Connect data socket
-                    remote_data_socket_client = socket.socket(
-                        socket.AF_INET, socket.SOCK_STREAM)
-                    remote_data_socket_client.connect(
-                        (remote_data_host, remote_data_port))
-
-                    # Send FETCH_LISTING command
-                    remote_control_socket.send(b"FETCH_LISTING\r\n")
-                    listing_response = remote_control_socket.recv(
-                        BUFFER_SIZE).decode()
-                    if not listing_response.startswith("150"):
-                        print(
-                            f"FETCH_LISTING init failed on remote server {node_id}: {listing_response}")
-                        remote_control_socket.close()
-                        remote_data_socket_client.close()
-                        continue
-
-                    # Receive directory listing
-                    remote_listing = b""
-                    while True:
-                        chunk = remote_data_socket_client.recv(BUFFER_SIZE)
-                        if not chunk:
-                            break
-                        remote_listing += chunk
-
-                    remote_data_socket_client.close()
-                    remote_control_socket.close()
-
-                    # Decode and add remote listing to set
-                    remote_listing_str = remote_listing.decode().strip()
-                    remote_entries = remote_listing_str.split('\r\n')
-                    for entry in remote_entries:  # Add remote entries to the set
-                        if entry:  # Make sure not to add empty strings from split
-                            unique_listing_entries.add(entry)
-
-                    print(f"Fetched listing from node {node_id}")
-
-                except Exception as e:
-                    print(f"Error fetching listing from node {node_id}: {e}")
-                    continue
-
+            if str(file_path).startswith(str(virtual_current_dir) + "/"):
+                relative_path = str(file_path)[len(
+                    str(virtual_current_dir)) + 1:]
+                if "/" not in relative_path:
+                    filename = relative_path  # Filename is the relative path itself in this case
+                    unique_listing_entries.add(filename)
+            elif str(virtual_current_dir) != "/" and str(file_path).startswith(str(virtual_current_dir).removeprefix("/")): 
+                relative_path = str(file_path)[len(str(virtual_current_dir))-1:]
+                if relative_path.startswith("/"):
+                    # remove the first "/" if it exists after removing virtual_current_dir
+                    relative_path = relative_path[1:]
+                if "/" not in relative_path:
+                    filename = relative_path
+                    unique_listing_entries.add(filename)
+        
         try:
             conn, addr = data_socket.accept()
             # Iterate through the set of unique entries and send them
@@ -1124,17 +1123,26 @@ class FTPServer:
             if data_socket:
                 data_socket.close()
 
-    def get_local_file_listing(self):
+    def get_local_file_listing(self,virtual_current_dir):
         """
         Returns a list of filenames and foldernames in the current directory
         of this server.
         """
         entries_list = []
-        entries = os.listdir(self.current_dir)
-        for entry in entries:
-            if entry == "temp_downloads":
-                continue  # Skip temp_downloads directory
-            entries_list.append(entry)  # Just append the name
+        # Ensure virtual_current_dir is relative to self.current_dir
+        if os.path.isabs(virtual_current_dir):
+            virtual_current_dir = os.path.relpath(virtual_current_dir, "/")
+        full_path = Path(self.current_dir).joinpath(virtual_current_dir).resolve()
+        print(f"Listing directory: {full_path}")
+        if os.path.exists(full_path) and full_path.is_dir():
+            entries = os.listdir(full_path)
+            for entry in entries:
+                if entry == "temp_downloads":
+                    continue  # Skip temp_downloads directory
+                entries_list.append(entry)
+                print(f"Entry: {entry}")
+        else:
+            print(f"Directory does not exist or is not a directory: {full_path}")
         return entries_list
 
 
@@ -1156,13 +1164,44 @@ class FTPServer:
             client_socket.send(
                 b"550 Could not get file modification time.\r\n")
 
-    def handle_mkd(self, client_socket, dirname):
-        try:
-            os.mkdir(os.path.join(self.current_dir, dirname))
-            client_socket.send(
-                f'257 "{dirname}" directory created\r\n'.encode())
-        except Exception as e:
-            client_socket.send(b"550 Failed to create directory.\r\n")
+    def handle_mkd(self, client_socket, dirname,virtual_current_dir):
+        # try:
+        #     os.mkdir(os.path.join(virtual_current_dir, dirname))
+        #     client_socket.send(
+        #         f'257 "{dirname}" directory created\r\n'.encode())
+        # except Exception as e:
+        #     client_socket.send(b"550 Failed to create directory.\r\n")
+        # important information: Current folder_replicas: {'temp_downloads': [400, 1], 'asd': [1], 'lol/assets': [1], 'server5/games': [400]} important to note that all directories are relative path
+        # try:
+        #     # Check if the directory already exists
+        #     if str(virtual_current_dir) == "/":
+        #         if dirname in self.folder_replicas:
+        #             client_socket.send(
+        #                 b"550 Directory already exists.\r\n")
+        #             return
+        #         else:
+        #             #add directory to folder_replicas
+        #             self.folder_replicas[dirname] = [self.node_id]
+        #             client_socket.send(
+        #                 f'257 "{dirname}" directory created\r\n'.encode())
+        #             # Broadcast the update
+        #             self.broadcast_folder_replicas_merge()
+        #             return
+        #     else:
+        #         #important to note that virtual_current_dir starts with "/" and will give problems
+        #         # check if directory exists as subfolder of virtual_current_dir
+        #         if str(virtual_current_dir).removeprefix("/").join(str(dirname)) in self.folder_replicas:
+        #             client_socket.send(
+        #                 b"550 Directory already exists.\r\n")
+        #             return
+        #         else:
+        #             #check if self.node_id is in list of owners of virtual_current_dir in folder_replicas
+        #             if self.node_id in self.folder_replicas[str(virtual_current_dir).removeprefix("/")]:
+                        
+                 
+                
+                
+                
 
 
     def handle_dele(self, client_socket, filename):
