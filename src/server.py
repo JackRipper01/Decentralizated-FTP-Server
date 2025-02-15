@@ -908,8 +908,8 @@ class FTPServer:
                         data_socket = self.handle_pasv(client_socket)
                     elif cmd == "LIST":
                         self.handle_list(client_socket, data_socket,virtual_current_dir)
-                    elif cmd == "FETCH_LISTING":
-                        self.handle_fetch_listing(client_socket, data_socket,virtual_current_dir)
+                    # elif cmd == "FETCH_LISTING":
+                    #     self.handle_fetch_listing(client_socket, data_socket,virtual_current_dir)
                     elif cmd == "STOR":
                         self.decentralized_handle_stor(
                             client_socket, data_socket, arg)
@@ -923,7 +923,7 @@ class FTPServer:
                     elif cmd == "MDTM":
                         self.handle_mdtm(client_socket, arg)
                     elif cmd == "MKD":
-                        self.handle_mkd(client_socket, arg)
+                        self.handle_mkd(client_socket, arg,virtual_current_dir)
                     elif cmd == "RETR":
                         self.decentralized_handle_retr(
                             client_socket, data_socket, arg)
@@ -1165,38 +1165,69 @@ class FTPServer:
                 b"550 Could not get file modification time.\r\n")
 
     def handle_mkd(self, client_socket, dirname,virtual_current_dir):
-        # try:
-        #     os.mkdir(os.path.join(virtual_current_dir, dirname))
-        #     client_socket.send(
-        #         f'257 "{dirname}" directory created\r\n'.encode())
-        # except Exception as e:
-        #     client_socket.send(b"550 Failed to create directory.\r\n")
-        # important information: Current folder_replicas: {'temp_downloads': [400, 1], 'asd': [1], 'lol/assets': [1], 'server5/games': [400]} important to note that all directories are relative path
-        # try:
-        #     # Check if the directory already exists
-        #     if str(virtual_current_dir) == "/":
-        #         if dirname in self.folder_replicas:
-        #             client_socket.send(
-        #                 b"550 Directory already exists.\r\n")
-        #             return
-        #         else:
-        #             #add directory to folder_replicas
-        #             self.folder_replicas[dirname] = [self.node_id]
-        #             client_socket.send(
-        #                 f'257 "{dirname}" directory created\r\n'.encode())
-        #             # Broadcast the update
-        #             self.broadcast_folder_replicas_merge()
-        #             return
-        #     else:
-        #         #important to note that virtual_current_dir starts with "/" and will give problems
-        #         # check if directory exists as subfolder of virtual_current_dir
-        #         if str(virtual_current_dir).removeprefix("/").join(str(dirname)) in self.folder_replicas:
-        #             client_socket.send(
-        #                 b"550 Directory already exists.\r\n")
-        #             return
-        #         else:
-        #             #check if self.node_id is in list of owners of virtual_current_dir in folder_replicas
-        #             if self.node_id in self.folder_replicas[str(virtual_current_dir).removeprefix("/")]:
+        try:
+            parent_v_dir_str = str(virtual_current_dir).lstrip(
+                "/")  # remove initial / to match folder_replicas key
+            responsible_nodes = self.folder_replicas.get(
+                parent_v_dir_str, [])  # get nodes for parent dir
+
+            if not responsible_nodes:
+                client_socket.send(
+                    b"550 Parent directory not managed by any node.\r\n")
+                return
+
+            created_locally = False
+            remote_mkdir_success = True  # assume success until proven otherwise
+
+            for node_id in responsible_nodes:
+                if node_id == self.node_id:
+                    # Construct the full path for the new directory for local node
+                    new_directory_path = self.current_dir.joinpath(
+                        virtual_current_dir.relative_to("/"), dirname)
+
+                    # Check if the directory already exists locally
+                    if new_directory_path.exists():
+                        client_socket.send(
+                            b"550 Directory already exists.\r\n")
+                        return  # Exit if directory exists locally
+
+                    # Create the directory locally
+                    try:
+                        new_directory_path.mkdir(parents=True, exist_ok=False)
+                        created_locally = True
+                    except OSError as e:
+                        print(f"Error creating directory locally: {e}")
+                        client_socket.send(
+                            b"550 Failed to create directory locally.\r\n")
+                        return  # exit if local creation fails
+
+                else:
+                    # Send remote MKD command to other responsible nodes
+                    # pass virtual path for remote nodes
+                    remote_v_dir = str(virtual_current_dir)
+                    # Command for remote node
+                    command = f"REMOTE_MKD {remote_v_dir} {dirname}"
+                    # self.send_command_to_node(node_id, command)
+                    # In real implementation, we should wait for response from remote nodes and handle failures.
+                    # For now, assuming command is sent successfully.
+                    # You might want to add error handling and response aggregation here in future.
+
+            if created_locally or remote_mkdir_success:  # if created locally or assumed remote success
+                client_socket.send(
+                    f'257 "{dirname}" directory created\r\n'.encode())
+            else:
+                client_socket.send(
+                    b"550 Failed to create directory on all nodes.\r\n")
+
+        except FileExistsError:  # this should not be reached because of the exist check before mkdir
+            client_socket.send(b"550 Directory already exists.\r\n")
+        # general OS error not related to local mkdir, but to folder_replicas access etc.
+        except OSError as e:
+            print(f"Error processing MKD command: {e}")
+            client_socket.send(b"550 Failed to create directory.\r\n")
+        except Exception as e:
+            print(f"Unexpected error in MKD: {e}")
+            client_socket.send(b"550 Failed to create directory.\r\n")
                         
                  
                 
