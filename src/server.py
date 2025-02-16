@@ -1,4 +1,5 @@
 import os
+import random
 import socket
 import threading
 import time
@@ -18,7 +19,7 @@ NODE_DISCOVERY_INTERVAL = 2  # Interval in seconds for broadcasting hello messag
 TEMP_DOWNLOAD_DIR_NAME = "temp_downloads"
 # Define timeout, e.g., 3 times the broadcast interval
 INACTIVE_NODE_TIMEOUT = NODE_DISCOVERY_INTERVAL * 3
-
+REPLICATION_FACTOR = 3
 
 class FTPServer:
     def __init__(self, host='127.0.0.1', node_id=0):
@@ -70,10 +71,10 @@ class FTPServer:
         # Log it
         print(f"Node {self.node_id} initialized with self config: {self_config}")
 
-        
-        
         self.start_inactive_node_removal_thread()
 
+
+    # region COMMS
     def update_file_replicas_on_startup(self):
         """
         Scans the server's resource directory and all subdirectories,
@@ -209,10 +210,11 @@ class FTPServer:
         message = f"FILE_REPLICAS_MERGE:{message}".encode(
             'utf-8')  # Add a prefix
 
-        for _ in range(3):  # Send multiple times for reliability in UDP
+        for _ in range(2):  # Send multiple times for reliability in UDP
             broadcast_socket.sendto(
                 message, ('<broadcast>', FILE_REPLICAS_PORT))
-            time.sleep(0.1)  # small delay between broadcasts
+            time_to_sleep = random.uniform(0.1, 2)
+            time.sleep(time_to_sleep)  # small delay between broadcasts
 
         broadcast_socket.close()
         print(f"Node {self.node_id}: Broadcasted file_replicas merge.")
@@ -228,10 +230,11 @@ class FTPServer:
         message = f"FOLDER_REPLICAS_MERGE:{message}".encode(
             'utf-8')
         
-        for _ in range(3):  # Send multiple times for reliability in UDP
+        for _ in range(2):  # Send multiple times for reliability in UDP
             broadcast_socket.sendto(
                 message, ('<broadcast>', FOLDER_REPLICAS_PORT))
-            time.sleep(0.1)
+            time_to_sleep=random.uniform(0.1,2)
+            time.sleep(time_to_sleep)
             
         broadcast_socket.close()
         print(f"Node {self.node_id}: Broadcasted folder_replicas merge.")
@@ -247,10 +250,11 @@ class FTPServer:
         message = f"FILE_REPLICAS_DELETE:{message_payload}".encode(
             'utf-8')  # Add a delete prefix
 
-        for _ in range(3):  # Send multiple times for reliability in UDP
+        for _ in range(2):  # Send multiple times for reliability in UDP
             broadcast_socket.sendto(
                 message, ('<broadcast>', FILE_REPLICAS_PORT))
-            time.sleep(0.1)  # small delay between broadcasts
+            time_to_sleep = random.uniform(0.1, 2)
+            time.sleep(time_to_sleep)  # small delay between broadcasts
 
         broadcast_socket.close()
         print(f"Node {self.node_id}: Broadcasted file_replicas delete for file: {file_path}")
@@ -266,10 +270,12 @@ class FTPServer:
         message = f"FILE_REPLICAS_DELETE:{message_payload}".encode(
             'utf-8')
         
-        for _ in range(3):  # Send multiple times for reliability in UDP
+        for _ in range(2):  # Send multiple times for reliability in UDP
             broadcast_socket.sendto(
                 message, ('<broadcast>', FOLDER_REPLICAS_PORT))
-            time.sleep(0.1)
+            #sleep randomly between 0.1 and 2 seconds
+            time_to_sleep=random.uniform(0.1,2)
+            time.sleep(time_to_sleep)
             
         broadcast_socket.close()
         print(f"Node {self.node_id}: Broadcasted folder_replicas delete for folder: {folder_path}")
@@ -293,6 +299,9 @@ class FTPServer:
         while True:
             try:
                 data, address = listen_socket.recvfrom(BUFFER_SIZE)
+                ip, port = address  # ip and self.host has format x.x.x.x
+                if ip == self.host:
+                    continue
                 message = data.decode().strip()
                 if message.startswith("HELLO,"):
                     parts = message.split(',')
@@ -347,6 +356,9 @@ class FTPServer:
         while True:
             try:
                 data, address = listen_socket.recvfrom(BUFFER_SIZE)
+                ip,port = address #ip and self.host has format x.x.x.x 
+                if ip == self.host:
+                    continue
                 message = data.decode().strip()
                 if message.startswith("FILE_REPLICAS_MERGE:"):
                     replicas_str = message[len("FILE_REPLICAS_MERGE:"):]
@@ -380,6 +392,9 @@ class FTPServer:
         while True:
             try:
                 data, address = listen_socket.recvfrom(BUFFER_SIZE)
+                ip, port = address  # ip and self.host has format x.x.x.x
+                if ip == self.host:
+                    continue
                 message = data.decode().strip()
                 if message.startswith("FOLDER_REPLICAS_MERGE:"):
                     replicas_str = message[len("FOLDER_REPLICAS_MERGE:"):]
@@ -418,7 +433,7 @@ class FTPServer:
         """Removes inactive nodes from chord_nodes_config based on last hello message time."""
         # print("Checking for inactive nodes...")
         current_time = time.time()
-
+        removed_nodes = []
         for node_info in self.chord_nodes_config:
             node_id = node_info[2]
             last_seen_time = node_info[3]
@@ -428,11 +443,72 @@ class FTPServer:
             if current_time - last_seen_time > INACTIVE_NODE_TIMEOUT:
                 print(
                     f"Inactive node found: Node {node_info[2]} (last seen: {node_info[3]})")
-                self.chord_nodes_config.remove(
-                    node_info)  # Remove inactive nodes
-                print(
-                    f"Updated chord_nodes_config after remove inactive nodes: {self.chord_nodes_config}")
+                
+                removed_nodes.append(node_info)
+        
+        if removed_nodes:
+            for node in removed_nodes:
+                self.chord_nodes_config.remove(node)
+            print(f"Removed inactive nodes: {removed_nodes}")
+            
+            print(
+            f"Updated chord_nodes_config after remove inactive nodes: {self.chord_nodes_config}")
+            self.redistribute_replicas_after_node_removal(removed_nodes)
+        
+        
 
+    def redistribute_replicas_after_node_removal(self, removed_nodes):
+        """Redistributes replicas that were on removed nodes."""
+        print("entered redistribute_replicas_after_node_removal")
+        removed_node_ids = {node[2] for node in removed_nodes}
+
+        
+
+        # Folder replicas redistribution (similar logic as files)
+        for folder_path, node_ids in list(self.folder_replicas.items()):
+            needs_redistribution = False
+            updated_node_ids = [nid for nid in node_ids if nid not in removed_node_ids]
+            if len(updated_node_ids) < REPLICATION_FACTOR and len(self.chord_nodes_config) >= REPLICATION_FACTOR-1:
+                needs_redistribution = True
+
+            if needs_redistribution:
+                print(f"Folder {folder_path} needs replica redistribution.")
+                target_nodes = self.find_successors_for_replication(
+                    folder_path, is_folder=True, exclude_nodes=updated_node_ids)
+                final_replica_nodes = list(set(updated_node_ids + target_nodes))[:REPLICATION_FACTOR]
+
+                self.folder_replicas[folder_path] = final_replica_nodes
+                print(f"Updated replicas for {folder_path} to: {final_replica_nodes}")
+                # Replication to new nodes would be triggered here.
+                # self.broadcast_file_replicas_distributed()  # Broadcast folder replica updates
+            print("Current folder_replicas:", self.folder_replicas)
+            
+        # File replicas redistribution
+        # Iterate over a copy to allow modification
+        for file_path, node_ids in list(self.file_replicas.items()):
+            needs_redistribution = False
+            updated_node_ids = [
+                nid for nid in node_ids if nid not in removed_node_ids]
+            if len(updated_node_ids) < REPLICATION_FACTOR and len(self.chord_nodes_config) >= REPLICATION_FACTOR-1:
+                needs_redistribution = True
+
+            if needs_redistribution:
+                print(f"File {file_path} needs replica redistribution.")
+                target_nodes = self.find_successors_for_replication(
+                    file_path, exclude_nodes=updated_node_ids)
+                print("target_nodes", target_nodes)
+                # Ensure no duplicates and limit to replication factor
+                final_replica_nodes = list(
+                    set(updated_node_ids + target_nodes))[:REPLICATION_FACTOR]
+                print("final_replica_nodes", final_replica_nodes)
+                self.file_replicas[file_path] = final_replica_nodes
+                print(
+                    f"Updated replicas for {file_path} to: {final_replica_nodes}")
+                # Here, ideally, you would trigger the actual replication to the new nodes if needed.
+                # For now, just updating the metadata.
+                # self.broadcast_file_replicas_distributed() # Important to broadcast the changes
+            print("Current file_replicas:", self.file_replicas)
+                
     def serialize_file_replicas(self):
         """Serializes the file_replicas dictionary to a string format (filename:node_id1,node_id2,...;...)."""
         serialized_str = ""
@@ -480,6 +556,8 @@ class FTPServer:
                 
                 replicas_dict[folder_path] = node_ids
         return replicas_dict
+
+# endregion COMMS
 
 # Chord methods (No changes needed in Chord logic itself)
 
@@ -563,6 +641,42 @@ class FTPServer:
 
         return successors_list
 
+    def find_successors_for_replication(self, name, num_successors=REPLICATION_FACTOR, is_folder=False, exclude_nodes=None):
+        """
+        Finds successor nodes for replication, excluding the current node and optionally other nodes.
+        Simple round-robin approach for successor selection based on node IDs.
+        """
+        print("entered find_successors_for_replication")
+        if exclude_nodes is None:
+            exclude_nodes = []
+        key = self.get_key(name)
+        available_nodes = [node for node in self.chord_nodes_config if node[2] not in exclude_nodes]
+        if not available_nodes:
+            return []
+        print("available_nodes ", available_nodes)
+        sorted_nodes = sorted(
+            available_nodes, key=lambda node: node[2])  # Sort by node ID
+        num_nodes = len(sorted_nodes)
+        if num_nodes < num_successors:
+            num_successors = num_nodes  # Adjust if not enough nodes
+
+        start_index = -1
+        for i in range(num_nodes):
+            # Find the first node with a higher ID
+            if sorted_nodes[i][2] > self.node_id:
+                start_index = i
+                break
+        if start_index == -1:  # If no node with higher ID, start from the beginning
+            start_index = 0
+
+        successor_nodes_ids = []
+        for i in range(num_successors):
+            index = (start_index + i) % num_nodes
+            # Append only the node ID
+            successor_nodes_ids.append(sorted_nodes[index][2])
+
+        return successor_nodes_ids
+    
 # Decentralized FTP server methods
 
     def decentralized_handle_stor(self, client_socket, data_socket, filename, is_forwarded_request=False):
@@ -1243,12 +1357,6 @@ class FTPServer:
             print(f"Unexpected error in MKD: {e}")
             client_socket.send(b"550 Failed to create directory.\r\n")
                         
-                 
-                
-                
-                
-
-
     def handle_dele(self, client_socket, filename):
         """
         Handles the DELE command in a decentralized manner.
