@@ -18,8 +18,9 @@ FOLDER_REPLICAS_PORT = 3002  # Port for UDP folder replicas communication
 NODE_DISCOVERY_INTERVAL = 2  # Interval in seconds for broadcasting hello messages
 TEMP_DOWNLOAD_DIR_NAME = "temp_downloads"
 # Define timeout, e.g., 3 times the broadcast interval
-INACTIVE_NODE_TIMEOUT = NODE_DISCOVERY_INTERVAL * 3
+INACTIVE_NODE_TIMEOUT = NODE_DISCOVERY_INTERVAL * 5
 REPLICATION_FACTOR = 3
+
 
 class FTPServer:
     def __init__(self, host='127.0.0.1', node_id=0):
@@ -51,30 +52,29 @@ class FTPServer:
         self_config = [self.host, CONTROL_PORT,
                        self.node_id, time.time()]  # timestamp
         self.chord_nodes_config.append(self_config)
-
+        # Dictionary to track folder replicas: {Key: Full Path of Folder , Value: [node_id1, node_id2, node_id3]}
+        self.folder_replicas = {}
         self.start_listeners()
         self.start_node_discovery_broadcast()
-        
+
         # Dictionary to track file replicas: {Key: Full Path of File including filename , Value: [node_id1, node_id2, node_id3]}
         self.file_replicas = {}
         self.update_file_replicas_on_startup()
         # Broadcast the updated file_replicas to other nodes
         self.broadcast_file_replicas_merge()
+
         
-        # Dictionary to track folder replicas: {Key: Full Path of Folder , Value: [node_id1, node_id2, node_id3]}
-        self.folder_replicas = {}
         self.update_folder_replicas_on_startup()
         # Broadcast the updated file_replicas to other nodes
         self.broadcast_folder_replicas_merge()
-        
-        
+
         # Log it
         print(f"Node {self.node_id} initialized with self config: {self_config}")
 
         self.start_inactive_node_removal_thread()
 
-
     # region COMMS
+
     def update_file_replicas_on_startup(self):
         """
         Scans the server's resource directory and all subdirectories,
@@ -130,7 +130,8 @@ class FTPServer:
                     print(
                         f"Registered folder '{relative_folder_path}' in folder_replicas for node {self.node_id}")
                 elif self.node_id not in self.folder_replicas[relative_folder_path]:
-                    self.folder_replicas[relative_folder_path].append(self.node_id)
+                    self.folder_replicas[relative_folder_path].append(
+                        self.node_id)
                     print(
                         f"Added node {self.node_id} to replicas for existing folder '{relative_folder_path}'")
                 else:
@@ -138,7 +139,7 @@ class FTPServer:
                         f"Folder '{relative_folder_path}' already registered for node {self.node_id} in folder_replicas.")
         print("Recursive folder replicas update on startup complete.")
         print(f"Current folder_replicas: {self.folder_replicas}")
-        
+
     def parse_node_config_string(self, config_str):
         """Parses the comma-separated node config string."""
         if not config_str:
@@ -168,8 +169,6 @@ class FTPServer:
         thread.start()
         print(f"Node Discovery Broadcast thread started.")
 
-    
-
     def start_inactive_node_removal_thread(self):
         """Starts the inactive node removal loop in a separate thread."""
         thread = threading.Thread(
@@ -197,7 +196,8 @@ class FTPServer:
             except Exception as e:
                 print(
                     f"Error broadcasting hello message from Node {self.node_id}: {e}")
-            time.sleep(NODE_DISCOVERY_INTERVAL)  # Broadcast every N seconds
+            time_random= random.uniform(0.1, NODE_DISCOVERY_INTERVAL)
+            time.sleep(time_random)  # Broadcast every N seconds
 
     def broadcast_file_replicas_merge(self):
         """Broadcasts a UDP message to add node ids to all other file_replicas of other servers."""
@@ -225,20 +225,21 @@ class FTPServer:
             socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         broadcast_socket.bind(('', 0))
-        
-        message = self.serialize_folder_replicas()  # Serialize folder_replicas to string
+
+        # Serialize folder_replicas to string
+        message = self.serialize_folder_replicas()
         message = f"FOLDER_REPLICAS_MERGE:{message}".encode(
             'utf-8')
-        
+
         for _ in range(2):  # Send multiple times for reliability in UDP
             broadcast_socket.sendto(
                 message, ('<broadcast>', FOLDER_REPLICAS_PORT))
-            time_to_sleep=random.uniform(0.1,2)
+            time_to_sleep = random.uniform(0.1, 2)
             time.sleep(time_to_sleep)
-            
+
         broadcast_socket.close()
         print(f"Node {self.node_id}: Broadcasted folder_replicas merge.")
-        
+
     def broadcast_file_replicas_delete(self, file_path):
         """Broadcasts a UDP message to delete node ids from all other file_replicas of other servers."""
         broadcast_socket = socket.socket(
@@ -246,7 +247,7 @@ class FTPServer:
         broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         broadcast_socket.bind(('', 0))  # Bind to any available port
 
-        message_payload = file_path # the file_path to be deleted from replicas
+        message_payload = file_path  # the file_path to be deleted from replicas
         message = f"FILE_REPLICAS_DELETE:{message_payload}".encode(
             'utf-8')  # Add a delete prefix
 
@@ -257,29 +258,31 @@ class FTPServer:
             time.sleep(time_to_sleep)  # small delay between broadcasts
 
         broadcast_socket.close()
-        print(f"Node {self.node_id}: Broadcasted file_replicas delete for file: {file_path}")
-    
+        print(
+            f"Node {self.node_id}: Broadcasted file_replicas delete for file: {file_path}")
+
     def broadcast_folder_replicas_delete(self, folder_path):
         """Broadcasts a UDP message to delete node ids from all other folder_replicas of other servers."""
         broadcast_socket = socket.socket(
             socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         broadcast_socket.bind(('', 0))
-        
-        message_payload = folder_path # the folder_path to be deleted from replicas
+
+        message_payload = folder_path  # the folder_path to be deleted from replicas
         message = f"FILE_REPLICAS_DELETE:{message_payload}".encode(
             'utf-8')
-        
+
         for _ in range(2):  # Send multiple times for reliability in UDP
             broadcast_socket.sendto(
                 message, ('<broadcast>', FOLDER_REPLICAS_PORT))
-            #sleep randomly between 0.1 and 2 seconds
-            time_to_sleep=random.uniform(0.1,2)
+            # sleep randomly between 0.1 and 2 seconds
+            time_to_sleep = random.uniform(0.1, 2)
             time.sleep(time_to_sleep)
-            
+
         broadcast_socket.close()
-        print(f"Node {self.node_id}: Broadcasted folder_replicas delete for folder: {folder_path}")
-    
+        print(
+            f"Node {self.node_id}: Broadcasted folder_replicas delete for folder: {folder_path}")
+
     def start_listeners(self):
         """Starts the listener threads."""
         threading.Thread(target=self.listen_for_hello_messages,
@@ -289,7 +292,7 @@ class FTPServer:
         threading.Thread(
             target=self.listen_for_folder_replicas_merge, daemon=True).start()
         print(f"Node Discovery Listener threads started.")
-        
+
     def listen_for_hello_messages(self):
         """Listens for UDP 'hello' messages from other nodes and updates node config."""
         listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -356,7 +359,7 @@ class FTPServer:
         while True:
             try:
                 data, address = listen_socket.recvfrom(BUFFER_SIZE)
-                ip,port = address #ip and self.host has format x.x.x.x 
+                ip, port = address  # ip and self.host has format x.x.x.x
                 if ip == self.host:
                     continue
                 message = data.decode().strip()
@@ -443,31 +446,28 @@ class FTPServer:
             if current_time - last_seen_time > INACTIVE_NODE_TIMEOUT:
                 print(
                     f"Inactive node found: Node {node_info[2]} (last seen: {node_info[3]})")
-                
+
                 removed_nodes.append(node_info)
-        
+
         if removed_nodes:
             for node in removed_nodes:
                 self.chord_nodes_config.remove(node)
             print(f"Removed inactive nodes: {removed_nodes}")
-            
+
             print(
-            f"Updated chord_nodes_config after remove inactive nodes: {self.chord_nodes_config}")
+                f"Updated chord_nodes_config after remove inactive nodes: {self.chord_nodes_config}")
             self.redistribute_replicas_after_node_removal(removed_nodes)
-        
-        
 
     def redistribute_replicas_after_node_removal(self, removed_nodes):
         """Redistributes replicas that were on removed nodes."""
         print("entered redistribute_replicas_after_node_removal")
         removed_node_ids = {node[2] for node in removed_nodes}
 
-        
-
         # Folder replicas redistribution (similar logic as files)
         for folder_path, node_ids in list(self.folder_replicas.items()):
             needs_redistribution = False
-            updated_node_ids = [nid for nid in node_ids if nid not in removed_node_ids]
+            updated_node_ids = [
+                nid for nid in node_ids if nid not in removed_node_ids]
             if len(updated_node_ids) < REPLICATION_FACTOR and len(self.chord_nodes_config) >= REPLICATION_FACTOR-1:
                 needs_redistribution = True
 
@@ -475,14 +475,19 @@ class FTPServer:
                 print(f"Folder {folder_path} needs replica redistribution.")
                 target_nodes = self.find_successors_for_replication(
                     folder_path, is_folder=True, exclude_nodes=updated_node_ids)
-                final_replica_nodes = list(set(updated_node_ids + target_nodes))[:REPLICATION_FACTOR]
+                final_replica_nodes = list(
+                    set(updated_node_ids + target_nodes))[:REPLICATION_FACTOR]
 
                 self.folder_replicas[folder_path] = final_replica_nodes
-                print(f"Updated replicas for {folder_path} to: {final_replica_nodes}")
+                print(
+                    f"Updated replicas for {folder_path} to: {final_replica_nodes}")
                 # Replication to new nodes would be triggered here.
-                # self.broadcast_file_replicas_distributed()  # Broadcast folder replica updates
+                for node_id in target_nodes:
+                    if node_id not in updated_node_ids and node_id == self.node_id:
+                        self.create_folder(folder_path)
+
             print("Current folder_replicas:", self.folder_replicas)
-            
+
         # File replicas redistribution
         # Iterate over a copy to allow modification
         for file_path, node_ids in list(self.file_replicas.items()):
@@ -493,22 +498,173 @@ class FTPServer:
                 needs_redistribution = True
 
             if needs_redistribution:
-                print(f"File {file_path} needs replica redistribution.")
-                target_nodes = self.find_successors_for_replication(
-                    file_path, exclude_nodes=updated_node_ids)
-                print("target_nodes", target_nodes)
-                # Ensure no duplicates and limit to replication factor
-                final_replica_nodes = list(
-                    set(updated_node_ids + target_nodes))[:REPLICATION_FACTOR]
-                print("final_replica_nodes", final_replica_nodes)
-                self.file_replicas[file_path] = final_replica_nodes
-                print(
-                    f"Updated replicas for {file_path} to: {final_replica_nodes}")
-                # Here, ideally, you would trigger the actual replication to the new nodes if needed.
-                # For now, just updating the metadata.
-                # self.broadcast_file_replicas_distributed() # Important to broadcast the changes
+                if len(list(updated_node_ids)) ==2:
+                    print(f"File {file_path} needs replica redistribution.")
+                    successor_list = self.find_successors(self.get_key(
+                        file_path), self.chord_nodes_config, num_successors=REPLICATION_FACTOR)
+                    source_node_info = successor_list[1]
+                    target_node_info = successor_list[2]
+
+                    final_replica_nodes = []
+                    for node_info in successor_list:
+                        node_host, node_control_port, node_id, node_time = node_info
+                        final_replica_nodes.append(node_id)
+                    print("final_replica_nodes", final_replica_nodes)
+                    self.file_replicas[file_path] = final_replica_nodes
+                    print(
+                        f"Updated replicas for {file_path} to: {final_replica_nodes}")
+                    
+                    for node_id in updated_node_ids:
+                        if node_id == self.node_id and node_id == source_node_info[2]:
+                            self.copy_file_to_node(file_path, target_node_info)
+                            
+                elif len(list(updated_node_ids)) == 1:
+                    print(f"File {file_path} needs replica redistribution.")
+                    successor_list = self.find_successors(self.get_key(
+                        file_path), self.chord_nodes_config, num_successors=REPLICATION_FACTOR)
+                    source_node_info = successor_list[0]
+                    target_one_node_info = successor_list[1]
+                    target_two_node_info = successor_list[2]
+
+                    final_replica_nodes=[]
+                    for node_info in successor_list:
+                        node_host, node_control_port, node_id, node_time = node_info 
+                        final_replica_nodes.append(node_id)
+                    print("final_replica_nodes", final_replica_nodes)
+                    self.file_replicas[file_path] = final_replica_nodes
+                    print(
+                        f"Updated replicas for {file_path} to: {final_replica_nodes}")
+                    
+                    for node_id in updated_node_ids:
+                        if node_id == self.node_id and node_id == source_node_info[2]:
+                            self.copy_file_to_node(file_path, target_one_node_info)
+                            self.copy_file_to_node(file_path, target_two_node_info)
+                else:
+                    print("Something is wrong cause was needed replication and update_node_ids is not 1 or 2")
+
             print("Current file_replicas:", self.file_replicas)
-                
+
+    def copy_file_to_node(self, file_path, node_info):
+        """Creates a folder in the specified node."""
+        print(f"NODE {self.node_id} : COPING {file_path} to node {node_info[2]} .")
+        # self.chord_nodes_config = []  # Initialize as empty list self_config = [self.host, CONTROL_PORT, self.node_id, time.time()] self.chord_nodes_config.append(self_config)
+
+        node_ip, node_control_port, node_id, node_time = node_info # Unpack node_info
+        
+
+        ftp_client_socket = socket.socket(
+            socket.AF_INET, socket.SOCK_STREAM)
+        ftp_client_socket.connect(
+            (node_ip, node_control_port))
+        ftp_client_socket.recv(
+            BUFFER_SIZE)  # Welcome message
+        ftp_client_socket.send(b"PASV\r\n")
+        pasv_response = ftp_client_socket.recv(
+            BUFFER_SIZE).decode()
+        ip_str = pasv_response.split('(')[1].split(')')[0]
+        ip_parts = ip_str.split(',')
+        data_server_ip = ".".join(ip_parts[:4])
+        data_server_port = (
+            int(ip_parts[4]) << 8) + int(ip_parts[5])
+        print(f"Node {self.node_id}: Data server IP: {data_server_ip}, port: {data_server_port}")
+        ftp_data_socket_client = socket.socket(
+            socket.AF_INET, socket.SOCK_STREAM)
+        ftp_data_socket_client.connect(
+            (data_server_ip, data_server_port))
+
+        ftp_client_socket.send(f"COPY {file_path}\r\n".encode())
+        full_file_path= os.path.join(self.resources_dir, file_path)
+        print("full_file_path", full_file_path)
+        with open(full_file_path, 'rb') as temp_file_forward:
+            while True:
+                data_to_forward = temp_file_forward.read(
+                    BUFFER_SIZE)
+                if not data_to_forward:
+                    break
+                ftp_data_socket_client.sendall(
+                    data_to_forward)
+
+        ftp_data_socket_client.close()
+        response = ftp_client_socket.recv(
+            BUFFER_SIZE).decode()  # Get 226 or error
+        ftp_client_socket.close()
+        print(f"Node {self.node_id}: COPY RESPONSE: {response}")
+        if response.startswith("226"):
+            print(
+                f"REPLICATION OF {file_path} TO NODE {node_id} SUCCESSFULLY.")
+        else:
+            print(
+                f"REPLICATION OF {file_path} TO NODE {node_id} ERRORRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR.")
+
+    def receive_file(self, client_socket, data_socket, file_path):
+        """
+        Receives a file from a client and saves it to the server.
+        """
+        print(f"Node {self.node_id}: Receiving file: {file_path}")
+        # Ensure temp download directory exists
+        temp_dir_path = self.resources_dir.joinpath(
+            TEMP_DOWNLOAD_DIR_NAME)
+        if not temp_dir_path.exists():
+            temp_dir_path.mkdir(parents=True, exist_ok=True)
+        
+        # Unique temp filename could be improved
+        filename=""
+        # try:
+        #     filename= os.path.basename(file_path)
+        #     print("filename", filename)
+        # except Exception as e:
+        #     #get filename from file_path example asd/games/abc.txt will return abc.txt
+        #     filename= str(file_path).split("/")[-1]
+        #     print("filename", filename)
+        
+        temp_file_path = temp_dir_path.joinpath(f"temp_{file_path}")
+        print(
+            f"Node {self.node_id}: Storing data to temp file: {temp_file_path}")
+
+        try:
+            conn, addr = data_socket.accept()
+            with open(temp_file_path, 'wb') as temp_file:
+                while True:
+                    data = conn.recv(BUFFER_SIZE)
+                    if not data:
+                        break
+                    temp_file.write(data)
+            conn.close()
+            print(f"Node {self.node_id}: Finished receiving data to temp file.")
+        except Exception as e:
+            print(f"Error receiving file data: {e}")
+            client_socket.send(b"550 Failed to receive file data.\r\n")
+            return
+        
+        print(
+            f"Node {self.node_id}: FILE REPLICATED, and this node is responsible, storing locally from temp.")
+        try:
+            final_file_path = os.path.join(
+                self.resources_dir, file_path)
+            shutil.copy2(temp_file_path, final_file_path)
+            print(
+                f"Node {self.node_id}: Successfully stored forwarded file locally: {file_path}")
+            client_socket.send(b"226 File stored successfully.\r\n")
+        except Exception as e:
+            print(
+                f"Node {self.node_id}: Error storing forwarded file locally: {e}")
+            # Consider better error reporting
+            client_socket.send(
+                b"550 Failed to store forwarded file locally.\r\n")
+        finally:
+            if data_socket:
+                data_socket.close()
+            try:
+                # Clean up temp file after attempts to distribute (success or failure)
+                os.remove(temp_file_path)
+                print(
+                    f"Node {self.node_id}: Temp file removed: {temp_file_path}")
+            except Exception as e:
+                print(
+                    f"Node {self.node_id}: Error deleting temp file {temp_file_path}: {e}")
+            
+
+        
     def serialize_file_replicas(self):
         """Serializes the file_replicas dictionary to a string format (filename:node_id1,node_id2,...;...)."""
         serialized_str = ""
@@ -522,7 +678,7 @@ class FTPServer:
         for folder_path, node_ids in self.folder_replicas.items():  # folder_path is now relative
             serialized_str += f"{folder_path}:{','.join(map(str, node_ids))};"
         return serialized_str.rstrip(';')  # Remove trailing semicolon if any
-    
+
     def deserialize_file_replicas(self, replicas_str):
         """Deserializes the string representation back to a file_replicas dictionary."""
         replicas_dict = {}
@@ -545,7 +701,7 @@ class FTPServer:
         replicas_dict = {}
         if not replicas_str:  # Handle empty string
             return replicas_dict
-        
+
         for item in replicas_str.split(';'):
             parts = item.split(':', 1)
             if len(parts) == 2:
@@ -553,14 +709,13 @@ class FTPServer:
                 node_ids_str = parts[1]
                 node_ids = [int(node_id) for node_id in node_ids_str.split(
                     ',')] if node_ids_str else []
-                
+
                 replicas_dict[folder_path] = node_ids
         return replicas_dict
 
 # endregion COMMS
 
 # Chord methods (No changes needed in Chord logic itself)
-
 
     def get_key(self, filename):
         """
@@ -650,7 +805,8 @@ class FTPServer:
         if exclude_nodes is None:
             exclude_nodes = []
         key = self.get_key(name)
-        available_nodes = [node for node in self.chord_nodes_config if node[2] not in exclude_nodes]
+        available_nodes = [
+            node for node in self.chord_nodes_config if node[2] not in exclude_nodes]
         if not available_nodes:
             return []
         print("available_nodes ", available_nodes)
@@ -676,7 +832,7 @@ class FTPServer:
             successor_nodes_ids.append(sorted_nodes[index][2])
 
         return successor_nodes_ids
-    
+
 # Decentralized FTP server methods
 
     def decentralized_handle_stor(self, client_socket, data_socket, filename, is_forwarded_request=False):
@@ -1002,6 +1158,12 @@ class FTPServer:
                     if cmd == "USER":
                         res = self.handle_user(client_socket, arg)
                         client_socket.send(res)
+                    elif cmd == "REPLICATE_DIR":
+                        if self.create_folder(arg):
+                            client_socket.send(
+                                b"226 Replication of Folder Successfully.\r\n")
+                    elif cmd =="COPY":
+                        self.receive_file(client_socket, data_socket, arg)
                     elif cmd == "PASS":
                         client_socket.send(b"230 User logged in, proceed.\r\n")
                     elif cmd == "SYST":
@@ -1010,18 +1172,20 @@ class FTPServer:
                         client_socket.send(
                             b"211-Features:\r\n UTF8\r\n211 End\r\n")
                     elif cmd == "PWD":
-                        self.handle_pwd(client_socket,virtual_current_dir)
+                        self.handle_pwd(client_socket, virtual_current_dir)
                     elif cmd == "CWD":
-                        virtual_current_dir=self.handle_cwd(client_socket, arg,virtual_current_dir)
+                        virtual_current_dir = self.handle_cwd(
+                            client_socket, arg, virtual_current_dir)
                     elif cmd == "CDUP":
-                        virtual_current_dir=self.handle_cwd(client_socket, Path(
-                            self.current_dir).parent,virtual_current_dir)
+                        virtual_current_dir = self.handle_cwd(client_socket, Path(
+                            self.current_dir).parent, virtual_current_dir)
                     elif cmd == "TYPE":
                         client_socket.send(b"200 Type set to I.\r\n")
                     elif cmd == "PASV":
                         data_socket = self.handle_pasv(client_socket)
                     elif cmd == "LIST":
-                        self.handle_list(client_socket, data_socket,virtual_current_dir)
+                        self.handle_list(
+                            client_socket, data_socket, virtual_current_dir)
                     # elif cmd == "FETCH_LISTING":
                     #     self.handle_fetch_listing(client_socket, data_socket,virtual_current_dir)
                     elif cmd == "STOR":
@@ -1037,7 +1201,8 @@ class FTPServer:
                     elif cmd == "MDTM":
                         self.handle_mdtm(client_socket, arg)
                     elif cmd == "MKD":
-                        self.handle_mkd(client_socket, arg,virtual_current_dir)
+                        self.handle_mkd(client_socket, arg,
+                                        virtual_current_dir)
                     elif cmd == "RETR":
                         self.decentralized_handle_retr(
                             client_socket, data_socket, arg)
@@ -1068,6 +1233,20 @@ class FTPServer:
             if data_socket:
                 data_socket.close()
 
+    def create_folder(self, folder_path):
+        # folder path variable is relative to self.resources_dir
+        absolute_folder_path = os.path.join(self.resources_dir, folder_path)
+
+        try:
+            os.makedirs(absolute_folder_path, exist_ok=True)
+            print(
+                f"Folder '{folder_path}' created successfully at '{absolute_folder_path}'")
+            return True
+        except OSError as e:
+            print(
+                f"Error creating folder '{folder_path}' at '{absolute_folder_path}': {e}")
+        return False
+
     def handle_auth(self, client_socket, arg):
         client_socket.send(b"AUTH not implemented yet.\r\n")
 
@@ -1081,29 +1260,31 @@ class FTPServer:
     def handle_user(self, client_socket, username):
         return b"331 User name okay, need password.\r\n"
 
-    def handle_pwd(self, client_socket,virtual_current_dir):
+    def handle_pwd(self, client_socket, virtual_current_dir):
         response = f'257 "{virtual_current_dir}"\r\n'
         client_socket.send(response.encode())
 
     def handle_cwd(self, client_socket, path, virtual_current_dir):
         try:
-            #check case path = ".." and avoir that virtual_current_dir superpases self.server_resource
+            # check case path = ".." and avoir that virtual_current_dir superpases self.server_resource
             if path == "..":
                 if str(virtual_current_dir) == "/":
                     client_socket.send(b"550 Directory not allowed.\r\n")
                     return virtual_current_dir
                 else:
                     virtual_current_dir = Path(virtual_current_dir).parent
-                    client_socket.send(b"250 Directory successfully changed.\r\n")
+                    client_socket.send(
+                        b"250 Directory successfully changed.\r\n")
                     return virtual_current_dir
-                
+
             # Check if the path is absolute or relative
             if not os.path.isabs(path):
                 path = os.path.join(virtual_current_dir, path)
 
             print(f"Changing directory to {path}")
             virtual_current_dir_path = Path(path).resolve()
-            key_virtual_curr_dir = str(virtual_current_dir_path).removeprefix("/")  # extract directory name
+            key_virtual_curr_dir = str(virtual_current_dir_path).removeprefix(
+                "/")  # extract directory name
 
             if key_virtual_curr_dir not in self.folder_replicas:  # check if directory exists in folder_replicas
                 # send error if not allowed
@@ -1118,7 +1299,6 @@ class FTPServer:
             print(f"Error in CWD: {e}")
             client_socket.send(b"550 Failed to change directory.\r\n")
             return virtual_current_dir
-            
 
     def handle_pasv(self, client_socket):
         data_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1132,8 +1312,7 @@ class FTPServer:
         client_socket.send(response.encode())
         return data_socket
 
-
-    def handle_list(self, client_socket, data_socket,virtual_current_dir):
+    def handle_list(self, client_socket, data_socket, virtual_current_dir):
         if not data_socket:
             client_socket.send(b"425 Use PASV first.\r\n")
             return
@@ -1141,7 +1320,6 @@ class FTPServer:
         client_socket.send(b"150 Here comes the directory listing.\r\n")
 
         unique_listing_entries = set()  # Use a set to store unique entries
-
 
         for folder_path, replica_nodes in self.folder_replicas.items():
             if str(virtual_current_dir) == "/":
@@ -1151,14 +1329,15 @@ class FTPServer:
                     dirname = os.path.basename(folder_path)  # extract dirname
                     unique_listing_entries.add(dirname)  # add dirname
                 continue
-            
+
             print(f"Folder path: {folder_path}")
             print(f"Virtual current dir: {virtual_current_dir}")
-            print(f"Checking if {folder_path} is a subfolder of {virtual_current_dir}")
-            
+            print(
+                f"Checking if {folder_path} is a subfolder of {virtual_current_dir}")
+
             # Get virtual_current_dir as string without leading/trailing slashes
             v_current_dir_str = str(virtual_current_dir).strip("/")
-            
+
             # Check if folder_path starts with virtual_current_dir (without leading slash) + "/"
             if str(folder_path).startswith(v_current_dir_str + "/"):
 
@@ -1170,7 +1349,7 @@ class FTPServer:
                     print(f"Adding folder: {folder_path}")
                     dirname = os.path.basename(folder_path)  # extract dirname
                     unique_listing_entries.add(dirname)  # add dirname
-        
+
         for file_path, replica_nodes in self.file_replicas.items():
             if str(virtual_current_dir) == "/":
                 # If virtual_current_dir is root, add all top-level files
@@ -1189,15 +1368,16 @@ class FTPServer:
                 if "/" not in relative_path:
                     filename = relative_path  # Filename is the relative path itself in this case
                     unique_listing_entries.add(filename)
-            elif str(virtual_current_dir) != "/" and str(file_path).startswith(str(virtual_current_dir).removeprefix("/")): 
-                relative_path = str(file_path)[len(str(virtual_current_dir))-1:]
+            elif str(virtual_current_dir) != "/" and str(file_path).startswith(str(virtual_current_dir).removeprefix("/")):
+                relative_path = str(file_path)[
+                    len(str(virtual_current_dir))-1:]
                 if relative_path.startswith("/"):
                     # remove the first "/" if it exists after removing virtual_current_dir
                     relative_path = relative_path[1:]
                 if "/" not in relative_path:
                     filename = relative_path
                     unique_listing_entries.add(filename)
-        
+
         try:
             conn, addr = data_socket.accept()
             # Iterate through the set of unique entries and send them
@@ -1213,7 +1393,7 @@ class FTPServer:
             if data_socket:
                 data_socket.close()
 
-    def get_local_file_listing(self,virtual_current_dir):
+    def get_local_file_listing(self, virtual_current_dir):
         """
         Returns a list of filenames and foldernames in the current directory
         of this server.
@@ -1222,7 +1402,8 @@ class FTPServer:
         # Ensure virtual_current_dir is relative to self.current_dir
         if os.path.isabs(virtual_current_dir):
             virtual_current_dir = os.path.relpath(virtual_current_dir, "/")
-        full_path = Path(self.current_dir).joinpath(virtual_current_dir).resolve()
+        full_path = Path(self.current_dir).joinpath(
+            virtual_current_dir).resolve()
         print(f"Listing directory: {full_path}")
         if os.path.exists(full_path) and full_path.is_dir():
             entries = os.listdir(full_path)
@@ -1232,9 +1413,9 @@ class FTPServer:
                 entries_list.append(entry)
                 print(f"Entry: {entry}")
         else:
-            print(f"Directory does not exist or is not a directory: {full_path}")
+            print(
+                f"Directory does not exist or is not a directory: {full_path}")
         return entries_list
-
 
     def handle_size(self, client_socket, filename):
         try:
@@ -1254,18 +1435,18 @@ class FTPServer:
             client_socket.send(
                 b"550 Could not get file modification time.\r\n")
 
-    def handle_mkd(self, client_socket, dirname,virtual_current_dir):
+    def handle_mkd(self, client_socket, dirname, virtual_current_dir):
         try:
             parent_v_dir_str = str(virtual_current_dir).lstrip(
                 "/")  # remove initial / to match folder_replicas key
             responsible_nodes = self.folder_replicas.get(
                 parent_v_dir_str, [])  # get nodes for parent dir
-            
+
             created_locally = False
             remote_mkdir_success = False  # assume success until proven otherwise
-            
+
             if not responsible_nodes:
-                #in this case the client wants to create new directory in root directory which is valid
+                # in this case the client wants to create new directory in root directory which is valid
                 new_directory_path = self.current_dir.joinpath(
                     virtual_current_dir.relative_to("/"), dirname)
                 if new_directory_path.exists():
@@ -1284,7 +1465,7 @@ class FTPServer:
                         self.broadcast_folder_replicas_merge()
                         print(
                             f"Registered new folder '{relative_new_dir_path}' in folder_replicas for node {self.node_id}")
-                        created_locally=True
+                        created_locally = True
                     else:
                         print(
                             "Wtf, se creo una nueva carpeta yy no se guardo en folder_replicas")
@@ -1293,8 +1474,6 @@ class FTPServer:
                     client_socket.send(
                         b"550 Failed to create directory locally.\r\n")
                     return  # exit if local creation fails
-
-            
 
             for node_id in responsible_nodes:
                 if node_id == self.node_id:
@@ -1322,7 +1501,8 @@ class FTPServer:
                             print(
                                 f"Registered new folder '{relative_new_dir_path}' in folder_replicas for node {self.node_id}")
                         else:
-                            print("Wtf, se creo una nueva carpeta yy no se guardo en folder_replicas")
+                            print(
+                                "Wtf, se creo una nueva carpeta yy no se guardo en folder_replicas")
                     except OSError as e:
                         print(f"Error creating directory locally: {e}")
                         client_socket.send(
@@ -1356,7 +1536,7 @@ class FTPServer:
         except Exception as e:
             print(f"Unexpected error in MKD: {e}")
             client_socket.send(b"550 Failed to create directory.\r\n")
-                        
+
     def handle_dele(self, client_socket, filename):
         """
         Handles the DELE command in a decentralized manner.
@@ -1419,10 +1599,9 @@ class FTPServer:
                 if relative_file_path in self.file_replicas:  # Use relative_file_path as key
                     del self.file_replicas[relative_file_path]
                     self.broadcast_file_replicas_delete(relative_file_path)
-                    
+
                 client_socket.send(b"250 File deleted successfully.\r\n")
 
-    
             except Exception as e:
                 print(f"Error deleting file locally in DELE: {e}")
                 client_socket.send(b"550 Failed to delete file.\r\n")
@@ -1505,6 +1684,8 @@ class FTPServer:
         finally:
             if data_socket:
                 data_socket.close()
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 3:  # Expecting node_id, config_string, host_ip
         print("""Read txt""")
