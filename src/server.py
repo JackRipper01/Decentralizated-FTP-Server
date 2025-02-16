@@ -217,7 +217,7 @@ class FTPServer:
             time.sleep(time_to_sleep)  # small delay between broadcasts
 
         broadcast_socket.close()
-        print(f"Node {self.node_id}: Broadcasted file_replicas merge.")
+        print(f"Node {self.node_id}: Broadcasted file_replicas merge.") 
 
     def broadcast_folder_replicas_merge(self):
         """Broadcasts a UDP message to add node ids to all other folder_replicas of other servers."""
@@ -239,7 +239,7 @@ class FTPServer:
 
         broadcast_socket.close()
         print(f"Node {self.node_id}: Broadcasted folder_replicas merge.")
-
+        
     def broadcast_file_replicas_delete(self, file_path):
         """Broadcasts a UDP message to delete node ids from all other file_replicas of other servers."""
         broadcast_socket = socket.socket(
@@ -269,7 +269,7 @@ class FTPServer:
         broadcast_socket.bind(('', 0))
 
         message_payload = folder_path  # the folder_path to be deleted from replicas
-        message = f"FILE_REPLICAS_DELETE:{message_payload}".encode(
+        message = f"FOLDER_REPLICAS_DELETE:{message_payload}".encode(
             'utf-8')
 
         for _ in range(2):  # Send multiple times for reliability in UDP
@@ -452,14 +452,47 @@ class FTPServer:
         if removed_nodes:
             for node in removed_nodes:
                 self.chord_nodes_config.remove(node)
+                # remove node id from file_replicas and folder_replicas
+                node_id = node[2]
+                self.remove_node_from_file_replicas(node_id)
+                self.remove_node_from_folder_replicas(node_id)
             print(f"Removed inactive nodes: {removed_nodes}")
 
             print(
                 f"Updated chord_nodes_config after remove inactive nodes: {self.chord_nodes_config}")
+            print(f"Current file_replicas: {self.file_replicas}")
+            print(f"Current folder_replicas: {self.folder_replicas}")
             self.redistribute_replicas_after_node_removal(removed_nodes)
 
+    def remove_node_from_file_replicas(self, node_id):
+        """Removes a node id from all file_replicas entries."""
+        for file_path, node_ids in list(self.file_replicas.items()):
+            if node_id in node_ids:
+                node_ids.remove(node_id)
+                if not node_ids:
+                    del self.file_replicas[file_path]
+                else:
+                    self.file_replicas[file_path] = node_ids
+                print(
+                    f"Removed node {node_id} from file_replicas for file '{file_path}'")
+    
+    def remove_node_from_folder_replicas(self, node_id):
+        """Removes a node id from all folder_replicas entries."""
+        for folder_path, node_ids in list(self.folder_replicas.items()):
+            if node_id in node_ids:
+                node_ids.remove(node_id)
+                if not node_ids:
+                    del self.folder_replicas[folder_path]
+                else:
+                    self.folder_replicas[folder_path] = node_ids
+                print(
+                    f"Removed node {node_id} from folder_replicas for folder '{folder_path}'")
+    
     def redistribute_replicas_after_node_removal(self, removed_nodes):
         """Redistributes replicas that were on removed nodes."""
+        if self.chord_nodes_config==1:
+            print("Nothing to do,I am alone T_T")
+            return
         print("entered redistribute_replicas_after_node_removal")
         removed_node_ids = {node[2] for node in removed_nodes}
 
@@ -500,10 +533,26 @@ class FTPServer:
             if needs_redistribution:
                 if len(list(updated_node_ids)) ==2:
                     print(f"File {file_path} needs replica redistribution.")
-                    successor_list = self.find_successors(self.get_key(
-                        file_path), self.chord_nodes_config, num_successors=REPLICATION_FACTOR)
-                    source_node_info = successor_list[1]
-                    target_node_info = successor_list[2]
+                    successor_list = self.find_successors(
+                        updated_node_ids[0], self.chord_nodes_config, num_successors=REPLICATION_FACTOR)
+                    if successor_list[1][2] in updated_node_ids:
+                        print(
+                            "THE SECOND NODE OF THE SUCCESSOR LIST IS IN UPDATE_NODE_IDS ,GOOD")
+                    if len(successor_list) >= 3:
+                        source_node_info = successor_list[0]
+                        if successor_list[2][2] not in updated_node_ids:
+                            target_node_info = successor_list[2]
+                        elif successor_list[1][2] not in updated_node_ids:
+                            target_node_info = successor_list[1]
+                            print(f"sucessor of {updated_node_ids[0]} have the file {file_path} ,copying to {target_node_info[2]} WTF?!")
+                        else:
+                            print(f"Something is wrong cause was needed replication and all successors of node {updated_node_ids[0]} already have the file {file_path}")
+                            raise Exception(
+                                "Something is wrong cause was needed replication and all successor of node {updated_node_ids[0]} already have the file")
+                    else:
+                        source_node_info = successor_list[0]
+                        target_node_info = successor_list[1]
+                    
 
                     final_replica_nodes = []
                     for node_info in successor_list:
@@ -520,11 +569,16 @@ class FTPServer:
                             
                 elif len(list(updated_node_ids)) == 1:
                     print(f"File {file_path} needs replica redistribution.")
-                    successor_list = self.find_successors(self.get_key(
-                        file_path), self.chord_nodes_config, num_successors=REPLICATION_FACTOR)
-                    source_node_info = successor_list[0]
-                    target_one_node_info = successor_list[1]
-                    target_two_node_info = successor_list[2]
+                    successor_list = self.find_successors(updated_node_ids[0], self.chord_nodes_config, num_successors=REPLICATION_FACTOR)
+                    if successor_list[0][2] == updated_node_ids[0]:
+                        print("THE FIRST NODE OF THE SUCCESSOR LIST IS EQUAL TO UPDATE_NODE_IDS[0]")
+                    if len(successor_list)>=3:
+                        source_node_info = successor_list[0]
+                        target_one_node_info = successor_list[1]
+                        target_two_node_info = successor_list[2]
+                    else:
+                        source_node_info = successor_list[0]
+                        target_one_node_info = successor_list[1]
 
                     final_replica_nodes=[]
                     for node_info in successor_list:
@@ -538,7 +592,8 @@ class FTPServer:
                     for node_id in updated_node_ids:
                         if node_id == self.node_id and node_id == source_node_info[2]:
                             self.copy_file_to_node(file_path, target_one_node_info)
-                            self.copy_file_to_node(file_path, target_two_node_info)
+                            if len(successor_list)>=3:
+                                self.copy_file_to_node(file_path, target_two_node_info)
                 else:
                     print("Something is wrong cause was needed replication and update_node_ids is not 1 or 2")
 
@@ -607,17 +662,10 @@ class FTPServer:
         if not temp_dir_path.exists():
             temp_dir_path.mkdir(parents=True, exist_ok=True)
         
-        # Unique temp filename could be improved
-        filename=""
-        # try:
-        #     filename= os.path.basename(file_path)
-        #     print("filename", filename)
-        # except Exception as e:
-        #     #get filename from file_path example asd/games/abc.txt will return abc.txt
-        #     filename= str(file_path).split("/")[-1]
-        #     print("filename", filename)
-        
-        temp_file_path = temp_dir_path.joinpath(f"temp_{file_path}")
+        #get filename from file_path example: file_path = "candelasa/mongo.txt" and filename should be  mongo.txt , other example file_path = "loco.mp4" and filename should be "loco.mp4"
+              
+        key=self.get_key(file_path)
+        temp_file_path = temp_dir_path.joinpath(f"temp_{key}")
         print(
             f"Node {self.node_id}: Storing data to temp file: {temp_file_path}")
 
@@ -720,8 +768,9 @@ class FTPServer:
     def get_key(self, filename):
         """
         Generates a Chord key for a given filename using SHA1 hash.
+        Now generates keys in the range 0 to 2047.
         """
-        return int(hashlib.sha1(filename.encode()).hexdigest(), 16) % 1024
+        return int(hashlib.sha1(filename.encode()).hexdigest(), 16) % 2048
 
     def find_successors(self, key, nodes_config, num_successors=3):
         """
@@ -835,16 +884,23 @@ class FTPServer:
 
 # Decentralized FTP server methods
 
-    def decentralized_handle_stor(self, client_socket, data_socket, filename, is_forwarded_request=False):
+    def decentralized_handle_stor(self, client_socket, data_socket, filename, virtual_current_dir,is_forwarded_request=False,):
         """
         Handles the STOR command in a decentralized manner.
         Data is first stored in a temp file, then distributed to responsible nodes.
         """
+        #update virtual_current_dir to the same but without the fist character
+        virtual_current_dir= str(virtual_current_dir)[1:]
         if not data_socket:
             client_socket.send(b"425 Use PASV first.\r\n")
             return
-
-        key = self.get_key(filename)
+        
+        file_path = os.path.join(os.path.join(
+            self.resources_dir, virtual_current_dir), filename)
+        relative_file_path = os.path.join(virtual_current_dir, filename)
+        print(f"file_path: {file_path}")
+        print(f"relative_file_path: {relative_file_path}")
+        key = self.get_key(relative_file_path)
         responsible_nodes_info = self.find_successors(
             key, self.chord_nodes_config, num_successors=3)
 
@@ -854,8 +910,8 @@ class FTPServer:
         if not temp_dir_path.exists():
             temp_dir_path.mkdir(parents=True, exist_ok=True)
 
-        # Unique temp filename could be improved
-        temp_file_path = temp_dir_path.joinpath(f"temp_{filename}")
+        # Unique temp file_path could be improved
+        temp_file_path = temp_dir_path.joinpath(f"temp_file{key}")
         print(
             f"Node {self.node_id}: Storing data to temp file: {temp_file_path}")
 
@@ -882,12 +938,11 @@ class FTPServer:
                         print(
                             f"Node {self.node_id}: Node is responsible, storing locally from temp file.")
                         try:
-                            final_file_path = os.path.join(
-                                self.current_dir, filename)
+                            final_file_path = file_path
                             # Use shutil.copy2 for efficient local copy
                             shutil.copy2(temp_file_path, final_file_path)
                             print(
-                                f"Node {self.node_id}: Successfully stored locally from temp file: {filename}")
+                                f"Node {self.node_id}: Successfully stored locally from temp file: {file_path}")
                             # Only add if local storage was successful
                             if os.path.exists(final_file_path):
                                 responsible_node_ids.append(
@@ -929,7 +984,7 @@ class FTPServer:
                                 (data_server_ip, data_server_port))
 
                             ftp_client_socket.send(
-                                f"FORWARD_STOR {filename}\r\n".encode())
+                                f"FORWARD_STOR {relative_file_path}\r\n".encode())
                             ftp_client_socket.recv(BUFFER_SIZE)  # 150 response
 
                             with open(temp_file_path, 'rb') as temp_file_forward:
@@ -963,9 +1018,9 @@ class FTPServer:
 
                 # Update file_replicas dictionary AFTER all storage attempts
                 if responsible_node_ids:  # Only update if there were successful replicas
-                    final_file_path = os.path.join(self.current_dir, filename)
-                    relative_file_path = os.path.relpath(
-                        final_file_path, self.resources_dir)  # Get relative path here
+                    final_file_path =file_path
+                    # relative_file_path = os.path.relpath(
+                    #     final_file_path, self.resources_dir)  # Get relative path here
 
                     # Use relative path as key
                     self.file_replicas[relative_file_path] = responsible_node_ids
@@ -975,7 +1030,7 @@ class FTPServer:
                     self.broadcast_file_replicas_merge()  # Broadcast the update!
                 else:
                     print(
-                        f"Node {self.node_id}: No replicas successfully stored for {filename}, file_replicas not updated.")
+                        f"Node {self.node_id}: No replicas successfully stored for {relative_file_path}, file_replicas not updated.")
 
             else:
                 # If it's a forwarded request, just store locally if responsible
@@ -983,11 +1038,10 @@ class FTPServer:
                     print(
                         f"Node {self.node_id}: Forwarded STOR, and this node is responsible, storing locally from temp.")
                     try:
-                        final_file_path = os.path.join(
-                            self.current_dir, filename)
+                        final_file_path = file_path
                         shutil.copy2(temp_file_path, final_file_path)
                         print(
-                            f"Node {self.node_id}: Successfully stored forwarded file locally: {filename}")
+                            f"Node {self.node_id}: Successfully stored forwarded file locally: {file_path}")
                     except Exception as e:
                         print(
                             f"Node {self.node_id}: Error storing forwarded file locally: {e}")
@@ -1190,10 +1244,13 @@ class FTPServer:
                     #     self.handle_fetch_listing(client_socket, data_socket,virtual_current_dir)
                     elif cmd == "STOR":
                         self.decentralized_handle_stor(
-                            client_socket, data_socket, arg)
+                            client_socket, data_socket, arg,virtual_current_dir)
                     elif cmd == "FORWARD_STOR":
+                        # need to parse arg to get filename and virtual_current_dir example of arg: /games/Batman AK/batman.exe we have to get filename = batman.exe and virtual_current_dir = /games/Batman AK
+                        filename,virtual_current_dir= self.parse_path_argument(arg)
+                        
                         self.decentralized_handle_stor(
-                            client_socket, data_socket, arg, is_forwarded_request=True)
+                            client_socket, data_socket, filename,virtual_current_dir, is_forwarded_request=True)
                     elif cmd == "FORWARD_DELE":
                         self.decentralized_handle_dele(client_socket, arg)
                     elif cmd == "SIZE":
@@ -1232,6 +1289,31 @@ class FTPServer:
             client_socket.close()
             if data_socket:
                 data_socket.close()
+
+    def parse_path_argument(arg):
+        """
+        Parses the argument string to extract the filename and virtual current directory.
+        Ensures virtual_current_dir is never "", defaulting to "/" if no directory part.
+        Args:
+            arg: The path argument string (e.g., "/games/Batman AK/batman.exe").
+        Returns:
+            A tuple containing:
+                - filename: The filename (e.g., "batman.exe").
+                - virtual_current_dir: The virtual current directory (e.g., "/games/Batman AK", or "/" if no dir).
+        """
+        filename = os.path.basename(arg)
+        virtual_current_dir = os.path.dirname(arg)
+
+        # Handle cases where dirname returns empty string (no directory part) or "." (current dir)
+        if virtual_current_dir == "" or virtual_current_dir == ".":
+            # Default to "/" when no directory part is found.
+            virtual_current_dir = "/"
+        elif virtual_current_dir == "/":  # dirname returns "/" for paths like "/filename.txt"
+            pass  # virtual_current_dir is already correctly "/"
+        else:
+            pass  # dirname returned a valid directory path
+
+        return filename, virtual_current_dir
 
     def create_folder(self, folder_path):
         # folder path variable is relative to self.resources_dir
