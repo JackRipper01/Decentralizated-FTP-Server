@@ -15,10 +15,10 @@ INTER_NODE_PORT = 5000
 HELLO_PORT = 3000  # Port for UDP global server communication
 FILE_REPLICAS_PORT = 3001  # Port for UDP file replicas communication
 FOLDER_REPLICAS_PORT = 3002  # Port for UDP folder replicas communication
-NODE_DISCOVERY_INTERVAL = 2  # Interval in seconds for broadcasting hello messages
+NODE_DISCOVERY_INTERVAL = 1  # Interval in seconds for broadcasting hello messages
 TEMP_DOWNLOAD_DIR_NAME = "temp_downloads"
 # Define timeout, e.g., 3 times the broadcast interval
-INACTIVE_NODE_TIMEOUT = NODE_DISCOVERY_INTERVAL * 5
+INACTIVE_NODE_TIMEOUT = 10  # Timeout in seconds for removing inactive nodes
 REPLICATION_FACTOR = 3
 
 
@@ -177,6 +177,16 @@ class FTPServer:
         print(
             f"Inactive Node Removal thread started. Checking every {INACTIVE_NODE_TIMEOUT} seconds.")
 
+    def start_listeners(self):
+        """Starts the listener threads."""
+        threading.Thread(target=self.listen_for_hello_messages,
+                         daemon=True).start()
+        threading.Thread(
+            target=self.listen_for_file_replicas_merge, daemon=True).start()
+        threading.Thread(
+            target=self.listen_for_folder_replicas_merge, daemon=True).start()
+        print(f"Node Discovery Listener threads started.")
+        
     def broadcast_hello_message(self):
         """Periodically broadcasts a UDP 'hello' message with node information."""
         broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -282,16 +292,6 @@ class FTPServer:
         broadcast_socket.close()
         print(
             f"Node {self.node_id}: Broadcasted folder_replicas delete for folder: {folder_path}")
-
-    def start_listeners(self):
-        """Starts the listener threads."""
-        threading.Thread(target=self.listen_for_hello_messages,
-                         daemon=True).start()
-        threading.Thread(
-            target=self.listen_for_file_replicas_merge, daemon=True).start()
-        threading.Thread(
-            target=self.listen_for_folder_replicas_merge, daemon=True).start()
-        print(f"Node Discovery Listener threads started.")
 
     def listen_for_hello_messages(self):
         """Listens for UDP 'hello' messages from other nodes and updates node config."""
@@ -889,8 +889,9 @@ class FTPServer:
         Handles the STOR command in a decentralized manner.
         Data is first stored in a temp file, then distributed to responsible nodes.
         """
-        #update virtual_current_dir to the same but without the fist character
-        virtual_current_dir= str(virtual_current_dir)[1:]
+        #update virtual_current_dir to the same but without the first character
+        if str(virtual_current_dir)[0]=="/":
+            virtual_current_dir= str(virtual_current_dir)[1:]
         if not data_socket:
             client_socket.send(b"425 Use PASV first.\r\n")
             return
@@ -1077,8 +1078,8 @@ class FTPServer:
             return
 
         key = self.get_key(filename)  # Calculate Chord key
-        responsible_node_info = self.find_successor(
-            key, self.chord_nodes_config)
+        responsible_node_info = self.find_successors(
+            key, self.chord_nodes_config)[0]
         responsible_node_host, responsible_node_control_port, responsible_node_id, responsible_node_time = responsible_node_info
 
         if responsible_node_host == self.host and responsible_node_control_port == CONTROL_PORT:
@@ -1208,7 +1209,7 @@ class FTPServer:
                     print(f"Received command: {command}")
                     cmd = command.split()[0].upper()
                     arg = command[len(cmd):].strip()
-
+                    print(f"Command: {cmd}, Argument: {arg}")
                     if cmd == "USER":
                         res = self.handle_user(client_socket, arg)
                         client_socket.send(res)
@@ -1247,7 +1248,7 @@ class FTPServer:
                             client_socket, data_socket, arg,virtual_current_dir)
                     elif cmd == "FORWARD_STOR":
                         # need to parse arg to get filename and virtual_current_dir example of arg: /games/Batman AK/batman.exe we have to get filename = batman.exe and virtual_current_dir = /games/Batman AK
-                        filename,virtual_current_dir= self.parse_path_argument(arg)
+                        filename,virtual_current_dir = self.parse_path_argument(arg)
                         
                         self.decentralized_handle_stor(
                             client_socket, data_socket, filename,virtual_current_dir, is_forwarded_request=True)
@@ -1290,7 +1291,7 @@ class FTPServer:
             if data_socket:
                 data_socket.close()
 
-    def parse_path_argument(arg):
+    def parse_path_argument(self,arg):
         """
         Parses the argument string to extract the filename and virtual current directory.
         Ensures virtual_current_dir is never "", defaulting to "/" if no directory part.
