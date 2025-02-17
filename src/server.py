@@ -315,7 +315,7 @@ class FTPServer:
             self.discovery_timer.cancel()  # Cancel the existing timer if running
 
         self.discovery_timer = threading.Timer(
-            8.0, self.redistribute_replicas)  # Create a new timer
+            15, self.redistribute_replicas)  # Create a new timer
         self.discovery_timer.start()  # Start the new timer
         print(f"Node {self.node_id}: Timer reset and started for 5 seconds.")
 
@@ -773,8 +773,9 @@ class FTPServer:
 
         # get filename from file_path example: file_path = "candelasa/mongo.txt" and filename should be  mongo.txt , other example file_path = "loco.mp4" and filename should be "loco.mp4"
 
-        key = self.get_key(file_path)
-        temp_file_path = temp_dir_path.joinpath(f"temp_{key}")
+        # key = self.get_key(file_path)
+        random_number=random.randint(0, 10000)
+        temp_file_path = temp_dir_path.joinpath(f"temp_{random_number}")
         print(
             f"Node {self.node_id}: Storing data to temp file: {temp_file_path}")
 
@@ -798,6 +799,12 @@ class FTPServer:
         try:
             final_file_path = os.path.join(
                 self.resources_dir, file_path)
+            #check if exist the directory of final_file_path
+            if not os.path.exists(os.path.dirname(final_file_path)):
+                try:
+                    os.makedirs(os.path.dirname(final_file_path))
+                except OSError as exc:
+                    print(f"Error creating directory: {exc}")
             shutil.copy2(temp_file_path, final_file_path)
             print(
                 f"Node {self.node_id}: Successfully stored forwarded file locally: {file_path}")
