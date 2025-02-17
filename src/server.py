@@ -1320,14 +1320,20 @@ class FTPServer:
                             print(
                                 "Data socket closed in finally block (forwarding with temp file).")
 
-    def decentralized_handle_dele(self, client_socket, filename):
+    def decentralized_handle_dele(self, client_socket, filename,virtual_current_dir):
         """
         Handles the FORWARD_DELE command to delete a file locally.
         """
         try:
-            filepath = os.path.join(self.current_dir, filename)
-            if os.path.exists(filepath):
-                os.remove(filepath)
+            if str(virtual_current_dir)[0] == "/":
+                virtual_current_dir = str(virtual_current_dir)[1:]
+
+
+            file_path = os.path.join(os.path.join(
+                self.resources_dir, virtual_current_dir), filename)
+            relative_file_path = os.path.join(virtual_current_dir, filename)
+            if os.path.exists(file_path):
+                os.remove(file_path)
                 client_socket.send(
                     b"250 File deleted successfully (forwarded).\r\n")
             else:
@@ -1397,7 +1403,9 @@ class FTPServer:
                         self.decentralized_handle_stor(
                             client_socket, data_socket, filename, virtual_current_dir, is_forwarded_request=True)
                     elif cmd == "FORWARD_DELE":
-                        self.decentralized_handle_dele(client_socket, arg)
+                        filename, virtual_current_dir = self.parse_path_argument(
+                            arg)
+                        self.decentralized_handle_dele(client_socket, filename,virtual_current_dir)
                     elif cmd == "SIZE":
                         self.handle_size(client_socket, arg)
                     elif cmd == "MDTM":
@@ -1419,7 +1427,7 @@ class FTPServer:
                         self.decentralized_handle_retr(
                             client_socket, data_socket, filename, virtual_current_dir)
                     elif cmd == "DELE":
-                        self.handle_dele(client_socket, arg)
+                        self.handle_dele(client_socket, arg,virtual_current_dir)
                     elif cmd == "RMD":
                         self.handle_rmd(client_socket, arg)
                     elif cmd == "RNFR":
@@ -1933,10 +1941,14 @@ class FTPServer:
         Handles the DELE command in a decentralized manner.
         Deletes the file from all servers that have a replica.
         """
-        filepath = os.path.join(
-            self.current_dir, filename)  # Construct full file path here
-        relative_file_path = os.path.relpath(
-            filepath, self.resources_dir)  # Get relative path
+        if str(virtual_current_dir)[0] == "/":
+            virtual_current_dir = str(virtual_current_dir)[1:]
+
+
+        file_path = os.path.join(os.path.join(
+            self.resources_dir, virtual_current_dir), filename)
+        relative_file_path = os.path.join(virtual_current_dir, filename)
+        
 
         if relative_file_path in self.file_replicas:  # Use relative_file_path as key
             # Use relative_file_path as key
@@ -1961,7 +1973,7 @@ class FTPServer:
                             # Welcome
                             forward_socket.recv(BUFFER_SIZE)  # Welcome message
                             forward_socket.send(
-                                f"FORWARD_DELE {filename}\r\n".encode())
+                                f"FORWARD_DELE {virtual_current_dir}/{filename}\r\n".encode())
                             response = forward_socket.recv(
                                 BUFFER_SIZE).decode().strip()
                             print(
@@ -1980,8 +1992,8 @@ class FTPServer:
             # Delete the file from the current server as well
             try:
 
-                if os.path.exists(filepath):
-                    os.remove(filepath)
+                if os.path.exists(file_path):
+                    os.remove(file_path)
                     print(f"File {filename} deleted locally.")
                 else:
                     print(f"File {filename} not found locally.")
@@ -2001,8 +2013,8 @@ class FTPServer:
             try:
                 print(
                     "File not tracked in replicas, attempt local delete anyway or send error")
-                if os.path.exists(filepath):
-                    os.remove(filepath)
+                if os.path.exists(file_path):
+                    os.remove(file_path)
                     client_socket.send(
                         b"250 File deleted successfully (local only, not tracked for replication).\r\n")
                 else:
