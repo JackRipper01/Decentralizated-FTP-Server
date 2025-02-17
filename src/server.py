@@ -648,51 +648,56 @@ class FTPServer:
 
         node_ip, node_control_port, node_id, node_time = node_info  # Unpack node_info
 
-        ftp_client_socket = socket.socket(
-            socket.AF_INET, socket.SOCK_STREAM)
-        ftp_client_socket.connect(
-            (node_ip, node_control_port))
-        ftp_client_socket.recv(
-            BUFFER_SIZE)  # Welcome message
-        ftp_client_socket.send(b"PASV\r\n")
-        pasv_response = ftp_client_socket.recv(
-            BUFFER_SIZE).decode()
-        ip_str = pasv_response.split('(')[1].split(')')[0]
-        ip_parts = ip_str.split(',')
-        data_server_ip = ".".join(ip_parts[:4])
-        data_server_port = (
-            int(ip_parts[4]) << 8) + int(ip_parts[5])
-        print(
-            f"Node {self.node_id}: Data server IP: {data_server_ip}, port: {data_server_port}")
-        ftp_data_socket_client = socket.socket(
-            socket.AF_INET, socket.SOCK_STREAM)
-        ftp_data_socket_client.connect(
-            (data_server_ip, data_server_port))
-
-        ftp_client_socket.send(f"COPY {file_path}\r\n".encode())
-        full_file_path = os.path.join(self.resources_dir, file_path)
-        print("full_file_path", full_file_path)
-        with open(full_file_path, 'rb') as temp_file_forward:
-            while True:
-                data_to_forward = temp_file_forward.read(
-                    BUFFER_SIZE)
-                if not data_to_forward:
-                    break
-                ftp_data_socket_client.sendall(
-                    data_to_forward)
-
-        ftp_data_socket_client.close()
-        response = ftp_client_socket.recv(
-            BUFFER_SIZE).decode()  # Get 226 or error
-        ftp_client_socket.close()
-        print(f"Node {self.node_id}: COPY RESPONSE: {response}")
-        if response.startswith("226"):
+        try:
+            ftp_client_socket = socket.socket(
+                socket.AF_INET, socket.SOCK_STREAM)
+            ftp_client_socket.connect(
+                (node_ip, node_control_port))
+            ftp_client_socket.recv(
+                BUFFER_SIZE)  # Welcome message
+            ftp_client_socket.send(b"PASV\r\n")
+            pasv_response = ftp_client_socket.recv(
+                BUFFER_SIZE).decode()
+            ip_str = pasv_response.split('(')[1].split(')')[0]
+            ip_parts = ip_str.split(',')
+            data_server_ip = ".".join(ip_parts[:4])
+            data_server_port = (
+                int(ip_parts[4]) << 8) + int(ip_parts[5])
             print(
-                f"REPLICATION OF {file_path} TO NODE {node_id} SUCCESSFULLY.")
-            return True
-        else:
+                f"Node {self.node_id}: Data server IP: {data_server_ip}, port: {data_server_port}")
+            ftp_data_socket_client = socket.socket(
+                socket.AF_INET, socket.SOCK_STREAM)
+            ftp_data_socket_client.connect(
+                (data_server_ip, data_server_port))
+
+            ftp_client_socket.send(f"COPY {file_path}\r\n".encode())
+            full_file_path = os.path.join(self.resources_dir, file_path)
+            print("full_file_path", full_file_path)
+            with open(full_file_path, 'rb') as temp_file_forward:
+                while True:
+                    data_to_forward = temp_file_forward.read(
+                        BUFFER_SIZE)
+                    if not data_to_forward:
+                        break
+                    ftp_data_socket_client.sendall(
+                        data_to_forward)
+
+            ftp_data_socket_client.close()
+            response = ftp_client_socket.recv(
+                BUFFER_SIZE).decode()  # Get 226 or error
+            ftp_client_socket.close()
+            print(f"Node {self.node_id}: COPY RESPONSE: {response}")
+            if response.startswith("226"):
+                print(
+                    f"REPLICATION OF {file_path} TO NODE {node_id} SUCCESSFULLY.")
+                return True
+            else:
+                print(
+                    f"REPLICATION OF {file_path} TO NODE {node_id} ERRORRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR.")
+                return False
+        except Exception as e:
             print(
-                f"REPLICATION OF {file_path} TO NODE {node_id} ERRORRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR.")
+                f"Error copying file to node {node_id}: {e}")
             return False
 
     def receive_file(self, client_socket, data_socket, file_path):
