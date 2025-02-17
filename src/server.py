@@ -22,6 +22,7 @@ TEMP_DOWNLOAD_DIR_NAME = "temp_downloads"
 # Define timeout, e.g., 3 times the broadcast interval
 INACTIVE_NODE_TIMEOUT = 10  # Timeout in seconds for removing inactive nodes
 REPLICATION_FACTOR = 3
+REDISTRIBUTION_INTERVAL = 10  # Interval in seconds for redistributing replicas
 
 
 class FTPServer:
@@ -75,6 +76,7 @@ class FTPServer:
         print(f"Node {self.node_id} initialized with self config: {self_config}")
 
         self.start_inactive_node_removal_thread()
+        self.start_redistribute_replicas_interment()
 
     # region COMMS
 
@@ -109,6 +111,7 @@ class FTPServer:
                         f"File '{relative_file_path}' already registered for node {self.node_id} in file_replicas.")
         print("Recursive file replicas update on startup complete.")
         print(f"Current file_replicas: {self.file_replicas}")
+        
 
     def update_folder_replicas_on_startup(self):
         """
@@ -172,6 +175,16 @@ class FTPServer:
         thread.start()
         print(f"Node Discovery Broadcast thread started.")
 
+    def start_redistribute_replicas_interment(self):
+        thread = threading.Thread(
+            target=self.redistribute_replicas_interment, daemon=True)
+        thread.start()
+    def redistribute_replicas_interment(self):
+        """Starts the node discovery broadcast thread."""
+        while True:
+            if not self.discovery_timer:
+                self.reset_discovery_timer()
+            time.sleep(REDISTRIBUTION_INTERVAL)
     def start_inactive_node_removal_thread(self):
         """Starts the inactive node removal loop in a separate thread."""
         thread = threading.Thread(
@@ -530,18 +543,22 @@ class FTPServer:
                     f"Folder {folder_path} needs replica redistribution.")
                 target_nodes = self.find_successors_for_replication(
                     folder_path, is_folder=True, exclude_nodes=updated_node_ids)
-                final_replica_nodes = list(
-                    set(updated_node_ids + target_nodes))[:REPLICATION_FACTOR]
 
-                self.folder_replicas[folder_path] = final_replica_nodes
-                print(
-                    f"Updated replicas for {folder_path} to: {final_replica_nodes}")
+                final_replica_nodes = set()
+                
                 # Replication to new nodes would be triggered here.
                 for node_id in target_nodes:
                     if node_id not in updated_node_ids and node_id == self.node_id:
                         self.create_folder(folder_path)
-
-            print("Current folder_replicas:", self.folder_replicas)
+                        final_replica_nodes.add(node_id)
+                        
+                final_replica_nodes = sorted(
+                    list(final_replica_nodes.union(updated_node_ids)))
+                
+                print("final_replica_nodes", final_replica_nodes)
+                self.folder_replicas[folder_path] = final_replica_nodes
+                print(f"Updated replicas for {folder_path} to: {final_replica_nodes}")
+                print("Current folder_replicas:", self.folder_replicas)
 
         # File replicas redistribution
         # Iterate over a copy to allow modification
@@ -552,6 +569,8 @@ class FTPServer:
             if len(updated_node_ids) < REPLICATION_FACTOR and len(self.chord_nodes_config) >= REPLICATION_FACTOR-1:
                 needs_redistribution = True
 
+            
+            final_replica_nodes = set()
             if needs_redistribution:
                 if len(list(updated_node_ids)) == 2:
                     print(
@@ -578,22 +597,26 @@ class FTPServer:
                         source_node_info = successor_list[0]
                         target_node_info = successor_list[1]
 
-                    final_replica_nodes = []
-                    for node_info in successor_list:
-                        node_host, node_control_port, node_id, node_time = node_info
-                        final_replica_nodes.append(node_id)
-                    print("final_replica_nodes", final_replica_nodes)
-                    self.file_replicas[file_path] = final_replica_nodes
-                    print(
-                        f"Updated replicas for {file_path} to: {final_replica_nodes}")
+                    # for node_info in successor_list:
+                    #     node_host, node_control_port, node_id, node_time = node_info
+                    #     final_replica_nodes.append(node_id)
 
                     for node_id in updated_node_ids:
                         if node_id == self.node_id and node_id == source_node_info[2]:
                             # worked.add(self.copy_file_to_node(
                             #     file_path, target_node_info))
-                            self.copy_file_to_node(
-                                        file_path, target_node_info)
-
+                            if self.copy_file_to_node(file_path, target_node_info):
+                                final_replica_nodes.add(target_node_info[2])
+                        
+                    #union of the updated_node_ids and the final_replica_nodes
+                    final_replica_nodes = sorted(
+                        list(final_replica_nodes.union(updated_node_ids)))
+                        
+                    print("final_replica_nodes", final_replica_nodes)
+                    self.file_replicas[file_path] = final_replica_nodes
+                    print(
+                        f"Updated replicas for {file_path} to: {final_replica_nodes}")
+                    
                 elif len(list(updated_node_ids)) == 1:
                     print(
                         f"File {file_path} needs replica redistribution.")
@@ -610,26 +633,30 @@ class FTPServer:
                         source_node_info = successor_list[0]
                         target_one_node_info = successor_list[1]
 
-                    final_replica_nodes = []
-                    for node_info in successor_list:
-                        node_host, node_control_port, node_id, node_time = node_info
-                        final_replica_nodes.append(node_id)
-                    print("final_replica_nodes", final_replica_nodes)
-                    self.file_replicas[file_path] = final_replica_nodes
-                    print(
-                        f"Updated replicas for {file_path} to: {final_replica_nodes}")
+                    # for node_info in successor_list:
+                    #     node_host, node_control_port, node_id, node_time = node_info
+                    #     final_replica_nodes.append(node_id)
+                    
 
                     for node_id in updated_node_ids:
                         if node_id == self.node_id and node_id == source_node_info[2]:
                             # worked.add(self.copy_file_to_node(
                             #     file_path, target_one_node_info))
-                            self.copy_file_to_node(
-                                file_path, target_one_node_info)
+                            if self.copy_file_to_node(file_path, target_one_node_info):
+                                final_replica_nodes.add(target_one_node_info[2])
                             if len(successor_list) >= 3:
                                 # worked.add(self.copy_file_to_node(
                                 #     file_path, target_two_node_info))
-                                self.copy_file_to_node(
-                                    file_path, target_two_node_info)
+                                if self.copy_file_to_node(file_path, target_two_node_info):
+                                    final_replica_nodes.add(target_two_node_info[2])
+                                    
+                    final_replica_nodes = sorted(
+                        list(final_replica_nodes.union(updated_node_ids)))
+                    print("final_replica_nodes", final_replica_nodes)
+                    self.file_replicas[file_path] = final_replica_nodes
+                    print(
+                        f"Updated replicas for {file_path} to: {final_replica_nodes}")
+                            
                 else:
                     print(
                         "Something is wrong cause was needed replication and update_node_ids is not 1 or 2")
@@ -647,10 +674,12 @@ class FTPServer:
         # self.chord_nodes_config = []  # Initialize as empty list self_config = [self.host, CONTROL_PORT, self.node_id, time.time()] self.chord_nodes_config.append(self_config)
 
         node_ip, node_control_port, node_id, node_time = node_info  # Unpack node_info
-
+        timeout_seconds = 15
         try:
             ftp_client_socket = socket.socket(
                 socket.AF_INET, socket.SOCK_STREAM)
+            # Set timeout for client socket operations
+            ftp_client_socket.settimeout(timeout_seconds)
             ftp_client_socket.connect(
                 (node_ip, node_control_port))
             ftp_client_socket.recv(
@@ -667,6 +696,8 @@ class FTPServer:
                 f"Node {self.node_id}: Data server IP: {data_server_ip}, port: {data_server_port}")
             ftp_data_socket_client = socket.socket(
                 socket.AF_INET, socket.SOCK_STREAM)
+            # Set timeout for data socket operations
+            ftp_data_socket_client.settimeout(timeout_seconds)
             ftp_data_socket_client.connect(
                 (data_server_ip, data_server_port))
 
@@ -679,12 +710,27 @@ class FTPServer:
                         BUFFER_SIZE)
                     if not data_to_forward:
                         break
+                try:
                     ftp_data_socket_client.sendall(
                         data_to_forward)
+                except socket.timeout:  # Timeout during sendall on data socket
+                    print(
+                        f"Node {self.node_id}: Timeout during sending data to node {node_id}.")
+                    ftp_data_socket_client.close()
+                    ftp_client_socket.close()
+                    return False
 
             ftp_data_socket_client.close()
-            response = ftp_client_socket.recv(
+            
+            try:
+                response = ftp_client_socket.recv(
                 BUFFER_SIZE).decode()  # Get 226 or error
+            except socket.timeout:  # Timeout during recv of response from control socket
+                print(
+                    f"Node {self.node_id}: Timeout waiting for COPY response from node {node_id}.")
+                ftp_client_socket.close()
+                return False
+            
             ftp_client_socket.close()
             print(f"Node {self.node_id}: COPY RESPONSE: {response}")
             if response.startswith("226"):
@@ -695,9 +741,23 @@ class FTPServer:
                 print(
                     f"REPLICATION OF {file_path} TO NODE {node_id} ERRORRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR.")
                 return False
+        except socket.timeout:
+            print(
+                f"Node {self.node_id}: Timeout occurred while communicating with node {node_id}.")
+            # You might want to close sockets here if they were successfully created
+            if 'ftp_client_socket' in locals():
+                ftp_client_socket.close()
+            if 'ftp_data_socket_client' in locals():
+                ftp_data_socket_client.close()
+            return False
         except Exception as e:
             print(
                 f"Error copying file to node {node_id}: {e}")
+            # You might want to close sockets here if they were successfully created
+            if 'ftp_client_socket' in locals():
+                ftp_client_socket.close()
+            if 'ftp_data_socket_client' in locals():
+                ftp_data_socket_client.close()
             return False
 
     def receive_file(self, client_socket, data_socket, file_path):
