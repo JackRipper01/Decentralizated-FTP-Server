@@ -47,6 +47,8 @@ class FTPServer:
         self.current_dir = self.resources_dir
         print(self.current_dir)
 
+        self.discovery_timer = None  # To hold the timer object
+        
         self.node_id = node_id  # Unique ID for this Chord node
         self.chord_nodes_config = []  # Initialize as empty list
         self_config = [self.host, CONTROL_PORT,
@@ -72,6 +74,8 @@ class FTPServer:
         print(f"Node {self.node_id} initialized with self config: {self_config}")
 
         self.start_inactive_node_removal_thread()
+        
+        
 
     # region COMMS
 
@@ -293,6 +297,15 @@ class FTPServer:
         print(
             f"Node {self.node_id}: Broadcasted folder_replicas delete for folder: {folder_path}")
 
+    def reset_discovery_timer(self):
+        """Resets the discovery timer. Cancels any existing timer and starts a new one."""
+        if self.discovery_timer:
+            self.discovery_timer.cancel()  # Cancel the existing timer if running
+
+        self.discovery_timer = threading.Timer(8.0, self.redistribute_replicas) # Create a new timer
+        self.discovery_timer.start() # Start the new timer
+        print(f"Node {self.node_id}: Timer reset and started for 5 seconds.")
+        
     def listen_for_hello_messages(self):
         """Listens for UDP 'hello' messages from other nodes and updates node config."""
         listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -332,6 +345,8 @@ class FTPServer:
                             if not node_exists and hello_node_id != self.node_id:
                                 new_node_info.append(time.time())
                                 self.chord_nodes_config.append(new_node_info)
+                                # Reset and start the timer every time a new node is discovered
+                                self.reset_discovery_timer()
                                 self.broadcast_file_replicas_merge()
                                 self.broadcast_folder_replicas_merge()
                                 print(
@@ -462,7 +477,7 @@ class FTPServer:
                 f"Updated chord_nodes_config after remove inactive nodes: {self.chord_nodes_config}")
             print(f"Current file_replicas: {self.file_replicas}")
             print(f"Current folder_replicas: {self.folder_replicas}")
-            self.redistribute_replicas_after_node_removal(removed_nodes)
+            self.redistribute_replicas(removed_nodes)
 
     def remove_node_from_file_replicas(self, node_id):
         """Removes a node id from all file_replicas entries."""
@@ -488,12 +503,14 @@ class FTPServer:
                 print(
                     f"Removed node {node_id} from folder_replicas for folder '{folder_path}'")
     
-    def redistribute_replicas_after_node_removal(self, removed_nodes):
+    def redistribute_replicas(self, removed_nodes=[]):
         """Redistributes replicas that were on removed nodes."""
         if self.chord_nodes_config==1:
             print("Nothing to do,I am alone T_T")
             return
-        print("entered redistribute_replicas_after_node_removal")
+        print("entered redistribute_replicas")
+        print(
+            f"Node {self.node_id}: 5 seconds elapsed without new node discovery. Calling MyFunction()")
         removed_node_ids = {node[2] for node in removed_nodes}
 
         # Folder replicas redistribution (similar logic as files)
@@ -520,6 +537,7 @@ class FTPServer:
                         self.create_folder(folder_path)
 
             print("Current folder_replicas:", self.folder_replicas)
+        self.discovery_timer = None  # Reset the timer after redistribution
 
         # File replicas redistribution
         # Iterate over a copy to allow modification
