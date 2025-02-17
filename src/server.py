@@ -505,117 +505,124 @@ class FTPServer:
     
     def redistribute_replicas(self, removed_nodes=[]):
         """Redistributes replicas that were on removed nodes."""
-        if self.chord_nodes_config==1:
-            print("Nothing to do,I am alone T_T")
-            return
-        print("entered redistribute_replicas")
-        print(
-            f"Node {self.node_id}: 5 seconds elapsed without new node discovery. Calling MyFunction()")
-        removed_node_ids = {node[2] for node in removed_nodes}
+        #create set
+        
+        for i in range(3):
+            worked=set()
+            if self.chord_nodes_config==1:
+                print("Nothing to do,I am alone T_T")
+                return
+            print("entered redistribute_replicas")
+            print(
+                f"Node {self.node_id}: 5 seconds elapsed without new node discovery. Calling MyFunction()")
+            removed_node_ids = {node[2] for node in removed_nodes}
 
-        # Folder replicas redistribution (similar logic as files)
-        for folder_path, node_ids in list(self.folder_replicas.items()):
-            needs_redistribution = False
-            updated_node_ids = [
-                nid for nid in node_ids if nid not in removed_node_ids]
-            if len(updated_node_ids) < REPLICATION_FACTOR and len(self.chord_nodes_config) >= REPLICATION_FACTOR-1:
-                needs_redistribution = True
+            # Folder replicas redistribution (similar logic as files)
+            for folder_path, node_ids in list(self.folder_replicas.items()):
+                needs_redistribution = False
+                updated_node_ids = [
+                    nid for nid in node_ids if nid not in removed_node_ids]
+                if len(updated_node_ids) < REPLICATION_FACTOR and len(self.chord_nodes_config) >= REPLICATION_FACTOR-1:
+                    needs_redistribution = True
 
-            if needs_redistribution:
-                print(f"Folder {folder_path} needs replica redistribution.")
-                target_nodes = self.find_successors_for_replication(
-                    folder_path, is_folder=True, exclude_nodes=updated_node_ids)
-                final_replica_nodes = list(
-                    set(updated_node_ids + target_nodes))[:REPLICATION_FACTOR]
+                if needs_redistribution:
+                    print(f"Folder {folder_path} needs replica redistribution.")
+                    target_nodes = self.find_successors_for_replication(
+                        folder_path, is_folder=True, exclude_nodes=updated_node_ids)
+                    final_replica_nodes = list(
+                        set(updated_node_ids + target_nodes))[:REPLICATION_FACTOR]
 
-                self.folder_replicas[folder_path] = final_replica_nodes
-                print(
-                    f"Updated replicas for {folder_path} to: {final_replica_nodes}")
-                # Replication to new nodes would be triggered here.
-                for node_id in target_nodes:
-                    if node_id not in updated_node_ids and node_id == self.node_id:
-                        self.create_folder(folder_path)
+                    self.folder_replicas[folder_path] = final_replica_nodes
+                    print(
+                        f"Updated replicas for {folder_path} to: {final_replica_nodes}")
+                    # Replication to new nodes would be triggered here.
+                    for node_id in target_nodes:
+                        if node_id not in updated_node_ids and node_id == self.node_id:
+                            self.create_folder(folder_path)
 
-            print("Current folder_replicas:", self.folder_replicas)
-        self.discovery_timer = None  # Reset the timer after redistribution
+                print("Current folder_replicas:", self.folder_replicas)
+            self.discovery_timer = None  # Reset the timer after redistribution
 
-        # File replicas redistribution
-        # Iterate over a copy to allow modification
-        for file_path, node_ids in list(self.file_replicas.items()):
-            needs_redistribution = False
-            updated_node_ids = [
-                nid for nid in node_ids if nid not in removed_node_ids]
-            if len(updated_node_ids) < REPLICATION_FACTOR and len(self.chord_nodes_config) >= REPLICATION_FACTOR-1:
-                needs_redistribution = True
+            # File replicas redistribution
+            # Iterate over a copy to allow modification
+            for file_path, node_ids in list(self.file_replicas.items()):
+                needs_redistribution = False
+                updated_node_ids = [
+                    nid for nid in node_ids if nid not in removed_node_ids]
+                if len(updated_node_ids) < REPLICATION_FACTOR and len(self.chord_nodes_config) >= REPLICATION_FACTOR-1:
+                    needs_redistribution = True
 
-            if needs_redistribution:
-                if len(list(updated_node_ids)) ==2:
-                    print(f"File {file_path} needs replica redistribution.")
-                    successor_list = self.find_successors(
-                        updated_node_ids[0], self.chord_nodes_config, num_successors=REPLICATION_FACTOR)
-                    if successor_list[1][2] in updated_node_ids:
-                        print(
-                            "THE SECOND NODE OF THE SUCCESSOR LIST IS IN UPDATE_NODE_IDS ,GOOD")
-                    if len(successor_list) >= 3:
-                        source_node_info = successor_list[0]
-                        if successor_list[2][2] not in updated_node_ids:
-                            target_node_info = successor_list[2]
-                        elif successor_list[1][2] not in updated_node_ids:
-                            target_node_info = successor_list[1]
-                            print(f"sucessor of {updated_node_ids[0]} have the file {file_path} ,copying to {target_node_info[2]} WTF?!")
+                if needs_redistribution:
+                    if len(list(updated_node_ids)) ==2:
+                        print(f"File {file_path} needs replica redistribution.")
+                        successor_list = self.find_successors(
+                            updated_node_ids[0], self.chord_nodes_config, num_successors=REPLICATION_FACTOR)
+                        if successor_list[1][2] in updated_node_ids:
+                            print(
+                                "THE SECOND NODE OF THE SUCCESSOR LIST IS IN UPDATE_NODE_IDS ,GOOD")
+                        if len(successor_list) >= 3:
+                            source_node_info = successor_list[0]
+                            if successor_list[2][2] not in updated_node_ids:
+                                target_node_info = successor_list[2]
+                            elif successor_list[1][2] not in updated_node_ids:
+                                target_node_info = successor_list[1]
+                                print(f"sucessor of {updated_node_ids[0]} have the file {file_path} ,copying to {target_node_info[2]} WTF?!")
+                            else:
+                                print(f"Something is wrong cause was needed replication and all successors of node {updated_node_ids[0]} already have the file {file_path}")
+                                raise Exception(
+                                    "Something is wrong cause was needed replication and all successor of node {updated_node_ids[0]} already have the file")
                         else:
-                            print(f"Something is wrong cause was needed replication and all successors of node {updated_node_ids[0]} already have the file {file_path}")
-                            raise Exception(
-                                "Something is wrong cause was needed replication and all successor of node {updated_node_ids[0]} already have the file")
+                            source_node_info = successor_list[0]
+                            target_node_info = successor_list[1]
+                        
+
+                        final_replica_nodes = []
+                        for node_info in successor_list:
+                            node_host, node_control_port, node_id, node_time = node_info
+                            final_replica_nodes.append(node_id)
+                        print("final_replica_nodes", final_replica_nodes)
+                        self.file_replicas[file_path] = final_replica_nodes
+                        print(
+                            f"Updated replicas for {file_path} to: {final_replica_nodes}")
+                        
+                        for node_id in updated_node_ids:
+                            if node_id == self.node_id and node_id == source_node_info[2]:
+                                worked.add(self.copy_file_to_node(file_path, target_node_info))
+                                
+                    elif len(list(updated_node_ids)) == 1:
+                        print(f"File {file_path} needs replica redistribution.")
+                        successor_list = self.find_successors(updated_node_ids[0], self.chord_nodes_config, num_successors=REPLICATION_FACTOR)
+                        if successor_list[0][2] == updated_node_ids[0]:
+                            print("THE FIRST NODE OF THE SUCCESSOR LIST IS EQUAL TO UPDATE_NODE_IDS[0]")
+                        if len(successor_list)>=3:
+                            source_node_info = successor_list[0]
+                            target_one_node_info = successor_list[1]
+                            target_two_node_info = successor_list[2]
+                        else:
+                            source_node_info = successor_list[0]
+                            target_one_node_info = successor_list[1]
+
+                        final_replica_nodes=[]
+                        for node_info in successor_list:
+                            node_host, node_control_port, node_id, node_time = node_info 
+                            final_replica_nodes.append(node_id)
+                        print("final_replica_nodes", final_replica_nodes)
+                        self.file_replicas[file_path] = final_replica_nodes
+                        print(
+                            f"Updated replicas for {file_path} to: {final_replica_nodes}")
+                        
+                        for node_id in updated_node_ids:
+                            if node_id == self.node_id and node_id == source_node_info[2]:
+                                worked.add(self.copy_file_to_node(file_path, target_one_node_info))
+                                if len(successor_list)>=3:
+                                    worked.add(self.copy_file_to_node(file_path, target_two_node_info))
                     else:
-                        source_node_info = successor_list[0]
-                        target_node_info = successor_list[1]
-                    
+                        print("Something is wrong cause was needed replication and update_node_ids is not 1 or 2")
 
-                    final_replica_nodes = []
-                    for node_info in successor_list:
-                        node_host, node_control_port, node_id, node_time = node_info
-                        final_replica_nodes.append(node_id)
-                    print("final_replica_nodes", final_replica_nodes)
-                    self.file_replicas[file_path] = final_replica_nodes
-                    print(
-                        f"Updated replicas for {file_path} to: {final_replica_nodes}")
-                    
-                    for node_id in updated_node_ids:
-                        if node_id == self.node_id and node_id == source_node_info[2]:
-                            self.copy_file_to_node(file_path, target_node_info)
-                            
-                elif len(list(updated_node_ids)) == 1:
-                    print(f"File {file_path} needs replica redistribution.")
-                    successor_list = self.find_successors(updated_node_ids[0], self.chord_nodes_config, num_successors=REPLICATION_FACTOR)
-                    if successor_list[0][2] == updated_node_ids[0]:
-                        print("THE FIRST NODE OF THE SUCCESSOR LIST IS EQUAL TO UPDATE_NODE_IDS[0]")
-                    if len(successor_list)>=3:
-                        source_node_info = successor_list[0]
-                        target_one_node_info = successor_list[1]
-                        target_two_node_info = successor_list[2]
-                    else:
-                        source_node_info = successor_list[0]
-                        target_one_node_info = successor_list[1]
+                print("Current file_replicas:", self.file_replicas)
+            if not (False in worked):
+                break
 
-                    final_replica_nodes=[]
-                    for node_info in successor_list:
-                        node_host, node_control_port, node_id, node_time = node_info 
-                        final_replica_nodes.append(node_id)
-                    print("final_replica_nodes", final_replica_nodes)
-                    self.file_replicas[file_path] = final_replica_nodes
-                    print(
-                        f"Updated replicas for {file_path} to: {final_replica_nodes}")
-                    
-                    for node_id in updated_node_ids:
-                        if node_id == self.node_id and node_id == source_node_info[2]:
-                            self.copy_file_to_node(file_path, target_one_node_info)
-                            if len(successor_list)>=3:
-                                self.copy_file_to_node(file_path, target_two_node_info)
-                else:
-                    print("Something is wrong cause was needed replication and update_node_ids is not 1 or 2")
-
-            print("Current file_replicas:", self.file_replicas)
 
     def copy_file_to_node(self, file_path, node_info):
         """Creates a folder in the specified node."""
@@ -665,9 +672,11 @@ class FTPServer:
         if response.startswith("226"):
             print(
                 f"REPLICATION OF {file_path} TO NODE {node_id} SUCCESSFULLY.")
+            return True
         else:
             print(
                 f"REPLICATION OF {file_path} TO NODE {node_id} ERRORRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR.")
+            return False
 
     def receive_file(self, client_socket, data_socket, file_path):
         """
