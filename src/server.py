@@ -1341,6 +1341,28 @@ class FTPServer:
         except Exception as e:
             print(f"Error in FORWARD_DELE: {e}")
             client_socket.send(b"550 Failed to delete file (forwarded).\r\n")
+            
+    def decentralized_handle_rmdir(self, client_socket, dirname,virtual_current_dir):
+        """
+        Handles the FORWARD_RMDIR command to delete a file locally.
+        """
+        try:
+            if str(virtual_current_dir)[0] == "/":
+                virtual_current_dir = str(virtual_current_dir)[1:]
+
+
+            folder_path = os.path.join(os.path.join(
+                self.resources_dir, virtual_current_dir), dirname)
+            relative_folder_path = os.path.join(virtual_current_dir, dirname)
+            if os.path.exists(folder_path):
+                os.rmdir(folder_path)
+                client_socket.send(
+                    b"250 Folder deleted successfully (forwarded).\r\n")
+            else:
+                client_socket.send(b"550 Folder not found (forwarded).\r\n")
+        except Exception as e:
+            print(f"Error in FORWARD_RMDIR: {e}")
+            client_socket.send(b"550 Failed to delete folder (forwarded).\r\n")
 
 # FTP server methods (rest of FTP server methods remain mostly the same)
     # ... (handle_client, handle_user, handle_pwd, handle_cwd, handle_pasv, handle_list, handle_stor, handle_size, handle_mdtm, handle_mkd, handle_retr, handle_dele, handle_rmd, handle_rnfr, handle_rnto, start) ...
@@ -1406,6 +1428,10 @@ class FTPServer:
                         filename, virtual_current_dir = self.parse_path_argument(
                             arg)
                         self.decentralized_handle_dele(client_socket, filename,virtual_current_dir)
+                    elif cmd == "FORWARD_RMDIR":
+                        dirname, virtual_current_dir = self.parse_path_argument(
+                            arg)
+                        self.decentralized_handle_rmdir(client_socket, dirname,virtual_current_dir)
                     elif cmd == "SIZE":
                         self.handle_size(client_socket, arg)
                     elif cmd == "MDTM":
@@ -1429,7 +1455,7 @@ class FTPServer:
                     elif cmd == "DELE":
                         self.handle_dele(client_socket, arg,virtual_current_dir)
                     elif cmd == "RMD":
-                        self.handle_rmd(client_socket, arg)
+                        self.handle_rmd(client_socket, arg,virtual_current_dir)
                     elif cmd == "RNFR":
                         rename_from = self.handle_rnfr(client_socket, arg)
                     elif cmd == "RNTO":
@@ -2026,13 +2052,76 @@ class FTPServer:
                 client_socket.send(
                     b"550 Failed to delete file (not tracked for replication).\r\n")
 
-    def handle_rmd(self, client_socket, dirname):
+    def handle_rmd(self, client_socket, dirname,virtual_current_dir):
         try:
-            os.rmdir(os.path.join(self.current_dir, dirname))
+            if str(virtual_current_dir)[0] == "/":
+                virtual_current_dir = str(virtual_current_dir)[1:]
+            #logs
+            print(f"RMD command received for directory: {dirname}, virtual path: {virtual_current_dir}")
+            
+            folder_path = os.path.join(os.path.join(
+                self.resources_dir, virtual_current_dir), dirname)
+            relative_folder_path = os.path.join(virtual_current_dir, dirname)
+            
+            
+            # Check if the directory exists locally
+            os.rmdir(folder_path)
+            # Update folder_replicas for the newly created directory
+            if relative_folder_path in self.folder_replicas:  # Use relative_file_path as key
+                # Use relative_file_path as key
+                replica_nodes = self.folder_replicas[relative_folder_path]
+                print(f"Folder {dirname} replicas found at nodes: {replica_nodes}")
+                # Iterate over a copy to allow modification
+                for node_id in list(replica_nodes):
+                    if node_id != self.node_id:
+                        target_node_info = None
+                        for node_config in self.chord_nodes_config:
+                            if node_config[2] == node_id:  # node_config[2] is node_id
+                                target_node_info = node_config
+                                break
+                        if target_node_info:
+                            target_host = target_node_info[0]
+                            target_port = target_node_info[1]
+                            try:
+                                forward_socket = socket.socket(
+                                    socket.AF_INET, socket.SOCK_STREAM)
+                                forward_socket.connect(
+                                    (target_host, CONTROL_PORT))  # Use CONTROL_PORT
+                                # Welcome
+                                forward_socket.recv(BUFFER_SIZE)  # Welcome message
+                                forward_socket.send(
+                                    f"FORWARD_RMDIR {virtual_current_dir}/{dirname}\r\n".encode())
+                                response = forward_socket.recv(
+                                    BUFFER_SIZE).decode().strip()
+                                print(
+                                    f"Response from node {node_id} for FORWARD_RMDIR: {response}")
+                                if response.startswith("250"):
+                                    pass  # Successfully forwarded deletion
+                                else:
+                                    print(
+                                        f"FORWARD_RMDIR to node {node_id} failed.")
+                            except Exception as e:
+                                print(
+                                    f"Error forwarding RMDIR to node {node_id}: {e}")
+                            finally:
+                                forward_socket.close()
+
+                # Delete the file from the current server as well
+                
+
+                    # Update file_replicas dictionary
+                if relative_folder_path in self.folder_replicas:  # Use relative_file_path as key
+                    del self.folder_replicas[relative_folder_path]
+                    self.broadcast_folder_replicas_delete(relative_folder_path)
+
+                
+
+            print(f"  Relative new directory path: {relative_folder_path}")
             client_socket.send(b"250 Directory deleted successfully.\r\n")
         except Exception as e:
-            print(f"Error in RMD: {e}")
-            client_socket.send(b"550 Failed to delete directory.\r\n")
+                print(f"Error deleting folder locally in RMDIR: {e}")
+                client_socket.send(b"550 Failed to delete folder.\r\n")
+    
 
     def handle_rnfr(self, client_socket, filename):
         if os.path.exists(os.path.join(self.current_dir, filename)):
