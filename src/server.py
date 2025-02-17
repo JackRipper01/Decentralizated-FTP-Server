@@ -9,6 +9,7 @@ from pathlib import Path
 import hashlib
 import shutil
 
+
 CONTROL_PORT = 21
 BUFFER_SIZE = 1024
 # Port for server-to-server communication (NOT USED NOW)
@@ -1404,6 +1405,9 @@ class FTPServer:
                     elif cmd == "MKD":
                         self.handle_mkd(client_socket, arg,
                                         virtual_current_dir)
+                    elif cmd == "REMOTE_MKD":
+                        folder_name, virtual_current_dir = self.parse_path_argument(arg)
+                        self.handle_mkd(client_socket, folder_name, virtual_current_dir)
                     elif cmd == "RETR":
                         self.decentralized_handle_retr(
                             client_socket, data_socket, arg, virtual_current_dir)
@@ -1669,108 +1673,262 @@ class FTPServer:
                 b"550 Could not get file modification time.\r\n")
 
     def handle_mkd(self, client_socket, dirname, virtual_current_dir):
+            # LOG: Entry point
+        print(
+            f"MKD command received for directory: {dirname}, virtual path: {virtual_current_dir}")
         try:
+            virtual_current_dir = Path(virtual_current_dir)
             parent_v_dir_str = str(virtual_current_dir).lstrip(
                 "/")  # remove initial / to match folder_replicas key
+            print(f"  Parent virtual directory string: {parent_v_dir_str}")  # LOG
             responsible_nodes = self.folder_replicas.get(
                 parent_v_dir_str, [])  # get nodes for parent dir
+            # LOG
+            print(f"  Responsible nodes for parent directory: {responsible_nodes}")
 
             created_locally = False
             remote_mkdir_success = False  # assume success until proven otherwise
 
             if not responsible_nodes:
+                print("  No responsible nodes found for parent directory (root or subroot not registered). Handling locally.")  # LOG
                 # in this case the client wants to create new directory in root directory which is valid
                 new_directory_path = self.current_dir.joinpath(
                     virtual_current_dir.relative_to("/"), dirname)
+                # LOG
+                print(f"  Local directory path to create: {new_directory_path}")
                 if new_directory_path.exists():
-                    print("subrootfolder not registered in folder_replicas")
-                    raise Exception
+                    print("  subrootfolder not registered in folder_replicas but directory exists locally - this should not happen normally.")  # LOG
+                    raise Exception  # It is better to raise an exception here if something unexpected happens
                 # Create the directory locally
                 try:
+                    print("  Attempting to create directory locally...")  # LOG
                     new_directory_path.mkdir(parents=True, exist_ok=False)
                     created_locally = True
+                    print("  Directory created locally successfully.")  # LOG
                     # Update folder_replicas for the newly created directory
                     relative_new_dir_path = str(
                         virtual_current_dir.joinpath(dirname).relative_to("/"))
+                    # LOG
+                    print(
+                        f"  Relative new directory path: {relative_new_dir_path}")
                     if relative_new_dir_path not in self.folder_replicas:
                         self.folder_replicas[relative_new_dir_path] = [
                             self.node_id]
                         self.broadcast_folder_replicas_merge()
                         print(
-                            f"Registered new folder '{relative_new_dir_path}' in folder_replicas for node {self.node_id}")
-                        created_locally = True
+                            f"  Registered new folder '{relative_new_dir_path}' in folder_replicas for node {self.node_id}")  # LOG
                     else:
                         print(
-                            "Wtf, se creo una nueva carpeta yy no se guardo en folder_replicas")
+                            "  Wtf, se creo una nueva carpeta yy no se guardo en folder_replicas - this should not happen normally.")  # LOG
                 except OSError as e:
-                    print(f"Error creating directory locally: {e}")
+                    print(f"  Error creating directory locally: {e}")  # LOG
                     client_socket.send(
                         b"550 Failed to create directory locally.\r\n")
+                    # LOG
+                    print(
+                        "  Sent '550 Failed to create directory locally' to client and returning.")
                     return  # exit if local creation fails
 
-            for node_id in responsible_nodes:
-                if node_id == self.node_id:
-                    # Construct the full path for the new directory for local node
-                    new_directory_path = self.current_dir.joinpath(
-                        virtual_current_dir.relative_to("/"), dirname)
+            else:  # handling responsible nodes case
+                # LOG
+                print(
+                    f"  Responsible nodes found: {responsible_nodes}. Processing for each node.")
+                for node_id in responsible_nodes:
+                    # LOG
+                    print(
+                        f"  Processing responsible node: {node_id}, current node is: {self.node_id}")
+                    if node_id == self.node_id:
+                        print("  Node is local node. Creating directory locally.")  # LOG
+                        # Construct the full path for the new directory for local node
+                        new_directory_path = self.current_dir.joinpath(
+                            virtual_current_dir.relative_to("/"), dirname)
+                        # LOG
+                        print(
+                            f"  Local directory path to create: {new_directory_path}")
 
-                    # Check if the directory already exists locally
-                    if new_directory_path.exists():
-                        client_socket.send(
-                            b"550 Directory already exists.\r\n")
-                        return  # Exit if directory exists locally
-
-                    # Create the directory locally
-                    try:
-                        new_directory_path.mkdir(parents=True, exist_ok=False)
-                        created_locally = True
-                        # Update folder_replicas for the newly created directory
-                        relative_new_dir_path = str(
-                            virtual_current_dir.joinpath(dirname).relative_to("/"))
-                        if relative_new_dir_path not in self.folder_replicas:
-                            self.folder_replicas[relative_new_dir_path] = [
-                                self.node_id]
-                            self.broadcast_folder_replicas_merge()
+                        # Check if the directory already exists locally
+                        if new_directory_path.exists():
+                            print("  Directory already exists locally.")  # LOG
+                            client_socket.send(
+                                b"550 Directory already exists.\r\n")
+                            # LOG
                             print(
-                                f"Registered new folder '{relative_new_dir_path}' in folder_replicas for node {self.node_id}")
-                        else:
+                                "  Sent '550 Directory already exists' to client and returning.")
+                            return  # Exit if directory exists locally
+
+                        # Create the directory locally
+                        try:
+                            print("  Attempting to create directory locally...")  # LOG
+                            new_directory_path.mkdir(parents=True, exist_ok=False)
+                            created_locally = True
+                            print("  Directory created locally successfully.")  # LOG
+                            # Update folder_replicas for the newly created directory
+                            relative_new_dir_path = str(
+                                virtual_current_dir.joinpath(dirname).relative_to("/"))
+                            # LOG
                             print(
-                                "Wtf, se creo una nueva carpeta yy no se guardo en folder_replicas")
-                    except OSError as e:
-                        print(f"Error creating directory locally: {e}")
-                        client_socket.send(
-                            b"550 Failed to create directory locally.\r\n")
-                        return  # exit if local creation fails
+                                f"  Relative new directory path: {relative_new_dir_path}")
+                            if relative_new_dir_path not in self.folder_replicas:
+                                self.folder_replicas[relative_new_dir_path] = [
+                                    self.node_id]
+                                self.broadcast_folder_replicas_merge()
+                                print(
+                                    f"  Registered new folder '{relative_new_dir_path}' in folder_replicas for node {self.node_id}")  # LOG
+                            else:
+                                print(
+                                    "  Wtf, se creo una nueva carpeta yy no se guardo en folder_replicas - this should not happen normally.")  # LOG
+                        except OSError as e:
+                            # LOG
+                            print(f"  Error creating directory locally: {e}")
+                            client_socket.send(
+                                b"550 Failed to create directory locally.\r\n")
+                            # LOG
+                            print(
+                                "  Sent '550 Failed to create directory locally' to client and returning.")
+                            return  # exit if local creation fails
 
-                else:
-                    # Send remote MKD command to other responsible nodes
-                    # pass virtual path for remote nodes
-                    remote_v_dir = str(virtual_current_dir)
-                    # Command for remote node
-                    command = f"REMOTE_MKD {remote_v_dir} {dirname}"
-                    # self.send_command_to_node(node_id, command)
-                    # In real implementation, we should wait for response from remote nodes and handle failures.
-                    # For now, assuming command is sent successfully.
-                    # You might want to add error handling and response aggregation here in future.
+                    else:  # Remote node handling
+                        # LOG
+                        print(
+                            f"  Node is remote node: {node_id}. Sending REMOTE_MKD command.")
+                        # Send remote MKD command to other responsible nodes
+                        # pass virtual path for remote nodes
+                        remote_v_dir = str(virtual_current_dir)
+                        # Command for remote node
+                        command = f"REMOTE_MKD {remote_v_dir}/{dirname}"
+                        print(f"  Remote MKD command to send: {command}")  # LOG
 
+                        node_info = None
+                        for node_information in self.chord_nodes_config:
+                            if node_information[2] == node_id:
+                                node_info = node_information
+                                break
+                        if not node_info:
+                            # LOG
+                            print(
+                                f"  Error: Node information not found for node_id {node_id}")
+                            continue  # or handle error differently, maybe raise exception or set remote_mkdir_success = False and break
+                        node_ip, node_control_port, node_id, node_time = node_info  # Unpack node_info
+                        # LOG
+                        print(
+                            f"  Remote node info: IP={node_ip}, Port={node_control_port}, ID={node_id}")
+
+                        ftp_client_socket = socket.socket(
+                            socket.AF_INET, socket.SOCK_STREAM)
+                        try:  # Add try-except block for connection and communication errors
+                            # LOG
+                            print(
+                                f"  Connecting to remote node {node_id} at {node_ip}:{node_control_port}...")
+                            ftp_client_socket.connect(
+                                (node_ip, node_control_port))
+                            print("  Connected to remote node.")  # LOG
+                            # LOG
+                            print("  Receiving welcome message from remote node...")
+                            welcome_message = ftp_client_socket.recv(
+                                BUFFER_SIZE).decode()  # Welcome message
+                            # LOG
+                            print(
+                                f"  Welcome message from remote node: {welcome_message.strip()}")
+                            print("  Sending PASV command to remote node...")  # LOG
+                            ftp_client_socket.send(b"PASV\r\n")
+                            pasv_response = ftp_client_socket.recv(
+                                BUFFER_SIZE).decode()
+                            # LOG
+                            print(
+                                f"  PASV response from remote node: {pasv_response.strip()}")
+                            ip_str = pasv_response.split('(')[1].split(')')[0]
+                            ip_parts = ip_str.split(',')
+                            data_server_ip = ".".join(ip_parts[:4])
+                            data_server_port = (
+                                int(ip_parts[4]) << 8) + int(ip_parts[5])
+                            print(
+                                f"  Node {self.node_id}: Data server IP: {data_server_ip}, port: {data_server_port}")  # LOG
+                            ftp_data_socket_client = socket.socket(
+                                socket.AF_INET, socket.SOCK_STREAM)
+                            # LOG
+                            print(
+                                f"  Connecting to remote data server {data_server_ip}:{data_server_port}...")
+                            ftp_data_socket_client.connect(
+                                (data_server_ip, data_server_port))
+                            print("  Connected to remote data server.")  # LOG
+
+                            # LOG
+                            print(
+                                f"  Sending REMOTE_MKD command to remote node: {command}")
+                            ftp_client_socket.send(
+                                f"REMOTE_MKD {remote_v_dir}/{dirname}\r\n".encode())
+                            # Data connection is not needed for MKD command, close it immediately after PASV
+                            ftp_data_socket_client.close()
+
+                            # LOG
+                            print("  Receiving response from remote MKD command...")
+                            response = ftp_client_socket.recv(
+                                BUFFER_SIZE).decode()  # Get 226 or error
+                            # LOG
+                            print(f"  Remote MKD response: {response.strip()}")
+
+                            if response.startswith("257"):
+                                remote_mkdir_success = True
+                                print(
+                                    f"  CREATE {remote_v_dir}/{dirname} dir in NODE {node_id} SUCCESSFULLY.")  # LOG
+                            else:
+                                print(
+                                    f"  CREATE {remote_v_dir}/{dirname} dir in NODE {node_id} ERRORRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR.")  # LOG
+                                # LOG
+                                print(
+                                    f"  Remote MKD failed, response code: {response.strip()}")
+                                # Ensure remote_mkdir_success is set to False in case of error.
+                                remote_mkdir_success = False
+
+                        except Exception as remote_e:
+                            # LOG
+                            print(
+                                f"  Exception during remote MKD command to node {node_id}: {remote_e}")
+                            # Remote mkdir failed due to exception.
+                            remote_mkdir_success = False
+
+                        finally:  # Ensure socket is closed even if errors occur
+                            ftp_client_socket.close()
+                            # LOG
+                            print(
+                                f"  Closed control connection to remote node {node_id}.")
+                            # If remote mkdir failed, no need to continue with other nodes as MKD is expected to be atomic for all responsible nodes or fail.
+                            if not remote_mkdir_success:
+                                # Exit loop if remote mkdir fails for one node.
+                                break
+
+            # LOG
+            print(
+                f"  Local directory creation status: {created_locally}, Remote mkdir success status: {remote_mkdir_success}")
             if created_locally or remote_mkdir_success:  # if created locally or assumed remote success
                 client_socket.send(
                     f'257 "{dirname}" directory created\r\n'.encode())
+                # LOG
+                print(f"  Sent '257 \"{dirname}\" directory created' to client.")
             else:
                 client_socket.send(
                     b"550 Failed to create directory on all nodes.\r\n")
+                # LOG
+                print("  Sent '550 Failed to create directory on all nodes' to client.")
 
         except FileExistsError:  # this should not be reached because of the exist check before mkdir
+            print("  FileExistsError caught (should not be reached normally).")  # LOG
             client_socket.send(b"550 Directory already exists.\r\n")
+            print("  Sent '550 Directory already exists' to client.")  # LOG
         # general OS error not related to local mkdir, but to folder_replicas access etc.
         except OSError as e:
-            print(f"Error processing MKD command: {e}")
+            print(f"  OSError processing MKD command: {e}")  # LOG
             client_socket.send(b"550 Failed to create directory.\r\n")
+            print("  Sent '550 Failed to create directory' to client.")  # LOG
         except Exception as e:
-            print(f"Unexpected error in MKD: {e}")
+            print(f"  Unexpected error in MKD: {e}")  # LOG
             client_socket.send(b"550 Failed to create directory.\r\n")
+            # LOG
+            print("  Sent '550 Failed to create directory' to client due to unexpected error.")
+        finally:
+            print("MKD command handling finished.")  # LOG
 
-    def handle_dele(self, client_socket, filename):
+    def handle_dele(self, client_socket, filename,virtual_current_dir):
         """
         Handles the DELE command in a decentralized manner.
         Deletes the file from all servers that have a replica.
