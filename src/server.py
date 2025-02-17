@@ -1,6 +1,7 @@
 import os
 import random
 import socket
+import tempfile
 import threading
 import time
 import sys
@@ -346,7 +347,7 @@ class FTPServer:
                                 new_node_info.append(time.time())
                                 self.chord_nodes_config.append(new_node_info)
                                 # Reset and start the timer every time a new node is discovered
-                                self.reset_discovery_timer()
+                                # self.reset_discovery_timer()
                                 self.broadcast_file_replicas_merge()
                                 self.broadcast_folder_replicas_merge()
                                 print(
@@ -1096,13 +1097,19 @@ class FTPServer:
                 print(
                     f"Node {self.node_id}: Error deleting temp file {temp_file_path}: {e}")
 
-    def decentralized_handle_retr(self, client_socket, data_socket, filename,virtual_current_dir):
+    def decentralized_handle_retr(self, client_socket, data_socket, filename, virtual_current_dir):
         """
-        Handles the RETR command in a decentralized manner using simplified FTP client for inter-node communication (no USER/PASS).
+        Handles the RETR command in a decentralized manner by downloading the file to a temp directory first
+        if the current node is not responsible, and then sending it to the client.
         """
+        print(
+            f"Entering decentralized_handle_retr with filename: {filename}, virtual_current_dir: {virtual_current_dir}")
         if str(virtual_current_dir)[0] == "/":
             virtual_current_dir = str(virtual_current_dir)[1:]
+            print(
+                f"Removed leading slash from virtual_current_dir. Now: {virtual_current_dir}")
         if not data_socket:
+            print("No data socket. Sending 425 error.")
             client_socket.send(b"425 Use PASV first.\r\n")
             return
         file_path = os.path.join(os.path.join(
@@ -1110,9 +1117,20 @@ class FTPServer:
         relative_file_path = os.path.join(virtual_current_dir, filename)
         print(f"file_path in RETR: {file_path}")
         print(f"relative_path in RETR: {relative_file_path}")
-        
-        responsible_node_ids = self.file_replicas[str(relative_file_path)[1:] if str(relative_file_path)[0]=="/" else relative_file_path]
-        
+
+        print(f"self.file_replicas: {self.file_replicas}")
+        key_to_lookup = str(relative_file_path)[1:] if str(
+            relative_file_path)[0] == "/" else relative_file_path
+        print(f"Looking up responsible nodes for key: {key_to_lookup}")
+        responsible_node_ids = self.file_replicas.get(key_to_lookup)
+        if responsible_node_ids is None:
+            print(
+                f"No responsible nodes found for key: {key_to_lookup}. Sending 550 File not found.")
+            client_socket.send(b"550 File not found.\r\n")
+            return
+
+        print(
+            f"Responsible node IDs for {relative_file_path}: {responsible_node_ids}")
         if self.node_id in responsible_node_ids:
             # Current node is responsible, retrieve locally
             print(
@@ -1120,34 +1138,46 @@ class FTPServer:
             try:
                 client_socket.send(b"150 Opening data connection.\r\n")
                 conn, addr = data_socket.accept()
+                print(
+                    f"Data connection accepted from {addr} for local retrieval.")
                 if not os.path.exists(file_path):
+                    print(
+                        f"File not found locally at path: {file_path}. Sending 550 File not found.")
                     client_socket.send(b"550 File not found.\r\n")
                     return
                 with open(file_path, 'rb') as file:
+                    print(f"Opening file locally for reading: {file_path}")
                     while True:
                         data = file.read(BUFFER_SIZE)
                         if not data:
+                            print("Finished reading file.")
                             break
+                        print(f"Sending {len(data)} bytes to data connection.")
                         conn.send(data)
+                    print("Data sending loop finished.")
                 conn.close()
+                print("Data connection closed after local retrieval.")
                 client_socket.send(b"226 Transfer complete.\r\n")
+                print("Sent 226 Transfer complete to client.")
             except Exception as e:
                 print(f"Error in decentralized_handle_retr (local): {e}")
                 client_socket.send(b"550 Failed to retrieve file.\r\n")
             finally:
                 if data_socket:
                     data_socket.close()
+                    print("Data socket closed in finally block (local retrieval).")
         else:
-            # Another node is responsible, act as FTP client to retrieve (simplified - no USER/PASS)
-            responsible_node_host=""
-            responsible_node_control_port=""
-            
+            # Another node is responsible, act as FTP client to retrieve and save to temp dir then send
+            responsible_node_host = ""
+            responsible_node_control_port = ""
+
+            print("Current node is not responsible, forwarding request by downloading to temp.")
             for node_info in self.chord_nodes_config:
                 if node_info[2] in responsible_node_ids and node_info[2] != self.node_id:
-                    responsible_node_host=node_info[0]
-                    responsible_node_control_port=node_info[1]
+                    responsible_node_host = node_info[0]
+                    responsible_node_control_port = node_info[1]
                     print(
-                        f"Node at {responsible_node_host}:{responsible_node_control_port} is responsible for key {file_path}, forwarding RETR request via simplified FTP client.")
+                        f"Node at {responsible_node_host}:{responsible_node_control_port} is responsible for key {file_path}, forwarding RETR request via simplified FTP client and saving to temp.")
                     try:
                         client_socket.send(
                             b"150 Opening data connection from responsible node via simplified FTP.\r\n")
@@ -1155,64 +1185,130 @@ class FTPServer:
                         # Simplified FTP Client Logic (no USER/PASS)
                         ftp_client_socket = socket.socket(
                             socket.AF_INET, socket.SOCK_STREAM)
+                        print(
+                            f"Connecting to responsible node at {responsible_node_host}:{responsible_node_control_port}")
                         ftp_client_socket.connect(
                             (responsible_node_host, responsible_node_control_port))
-                        ftp_client_socket.recv(BUFFER_SIZE)  # Welcome message
-                        # USER/PASS REMOVED
+                        print(f"Connected to responsible node.")
+                        welcome_message = ftp_client_socket.recv(BUFFER_SIZE)
+                        print(
+                            f"Received welcome message from responsible node: {welcome_message}")
                         ftp_client_socket.send(b"PASV\r\n")
-                        pasv_response = ftp_client_socket.recv(BUFFER_SIZE).decode()
+                        print("Sent PASV to responsible node.")
+                        pasv_response = ftp_client_socket.recv(
+                            BUFFER_SIZE).decode()
+                        print(
+                            f"Received PASV response from responsible node: {pasv_response}")
                         # Parse PASV response to get data port
                         ip_str = pasv_response.split('(')[1].split(')')[0]
                         ip_parts = ip_str.split(',')
                         data_server_ip = ".".join(ip_parts[:4])
-                        data_server_port = (int(ip_parts[4]) << 8) + int(ip_parts[5])
+                        data_server_port = (
+                            int(ip_parts[4]) << 8) + int(ip_parts[5])
+                        print(
+                            f"Parsed data server IP: {data_server_ip}, Port: {data_server_port}")
 
                         ftp_data_socket_client = socket.socket(
                             socket.AF_INET, socket.SOCK_STREAM)
+                        print(
+                            f"Connecting data socket to {data_server_ip}:{data_server_port}")
                         ftp_data_socket_client.connect(
                             (data_server_ip, data_server_port))
+                        print(f"Data socket connected to responsible node.")
 
-                        ftp_client_socket.send(f"FORWARD_RETR {filename}\r\n".encode())
+                        ftp_client_socket.send(
+                            f"FORWARD_RETR {relative_file_path}\r\n".encode())
+                        print(
+                            f"Sent FORWARD_RETR command: FORWARD_RETR {relative_file_path}")
                         retr_response = ftp_client_socket.recv(
                             BUFFER_SIZE).decode()  # 150 or error
+                        print(
+                            f"Received RETR response from responsible node: {retr_response}")
 
                         if retr_response.startswith("150"):
                             data_conn, addr = data_socket.accept()  # Accept client data connection
+                            print(
+                                f"Data connection accepted from client {addr} for forwarding from temp file.")
 
-                            # Receive data from inter-node data connection and forward to client data connection
-                            while True:
-                                data_from_remote = ftp_data_socket_client.recv(
-                                    BUFFER_SIZE)
-                                if not data_from_remote:
-                                    break
-                                data_conn.sendall(data_from_remote)
+                            temp_file_path = ""
+                            # Use tempfile.TemporaryDirectory to handle temp dir and cleanup
+                            with tempfile.TemporaryDirectory() as temp_dir:
+                                temp_file_path = os.path.join(
+                                    temp_dir, "temp_downloaded_file")
+                                print(f"Temporary file path: {temp_file_path}")
+                                with open(temp_file_path, 'wb') as temp_file:
+                                    print(
+                                        "Receiving data from remote and writing to temp file...")
+                                    while True:
+                                        data_from_remote = ftp_data_socket_client.recv(
+                                            BUFFER_SIZE)
+                                        if not data_from_remote:
+                                            print(
+                                                "No more data from remote data socket.")
+                                            break
+                                        temp_file.write(data_from_remote)
+                                        print(
+                                            f"Received and wrote {len(data_from_remote)} bytes to temp file.")
+                                    print("Finished writing to temp file.")
+
+                                print("Opening temp file to send data to client...")
+                                with open(temp_file_path, 'rb') as temp_file_read:
+                                    print("Sending data from temp file to client...")
+                                    while True:
+                                        data_from_temp_file = temp_file_read.read(
+                                            BUFFER_SIZE)
+                                        if not data_from_temp_file:
+                                            print("Finished reading from temp file.")
+                                            break
+                                        data_conn.sendall(data_from_temp_file)
+                                        print(
+                                            f"Sent {len(data_from_temp_file)} bytes to client from temp file.")
+                                    print(
+                                        "Finished sending data from temp file to client.")
+                            # temp_dir is automatically deleted here
 
                             data_conn.close()  # Close client data connection
+                            print(
+                                "Client data connection closed after forwarding from temp file.")
                             ftp_data_socket_client.close()
+                            print("Remote data socket client closed.")
                             response = ftp_client_socket.recv(
                                 BUFFER_SIZE).decode()  # Get 226 or error
+                            print(
+                                f"Received final response from responsible node: {response}")
                             ftp_client_socket.close()
+                            print("Control socket to responsible node closed.")
 
                             if response.startswith("226"):
                                 client_socket.send(
-                                    b"226 Transfer complete (forwarded via simplified FTP).\r\n")
+                                    b"226 Transfer complete (forwarded via simplified FTP and temp file).\r\n")
+                                print(
+                                    "Sent 226 Transfer complete (forwarded via temp file) to client.")
                             else:
                                 client_socket.send(
-                                    b"550 Failed to forward file via simplified FTP (remote error).\r\n")  # Improve error reporting
+                                    b"550 Failed to forward file via simplified FTP (remote error after temp file).\r\n")
+                                print(
+                                    "Sent 550 Failed to forward (remote error after temp file) to client.")
                         else:
                             client_socket.send(
-                                b"550 Failed to retrieve file via simplified FTP (remote RETR failed).\r\n")  # RETR command itself failed
+                                b"550 Failed to retrieve file via simplified FTP (remote RETR failed before temp file).\r\n")
+                            print(
+                                "Sent 550 Failed to retrieve (remote RETR failed before temp file) to client.")
                             ftp_client_socket.close()
                             ftp_data_socket_client.close()
 
                     except Exception as e:
                         print(
-                            f"Error in decentralized_handle_retr (forwarding via simplified FTP): {e}")
+                            f"Error in decentralized_handle_retr (forwarding via simplified FTP with temp file): {e}")
                         client_socket.send(
-                            b"550 Failed to retrieve file (forwarding error via simplified FTP).\r\n")
+                            b"550 Failed to retrieve file (forwarding error via simplified FTP with temp file).\r\n")
+                        print(
+                            "Sent 550 Failed to retrieve (forwarding error with temp file) to client.")
                     finally:
                         if data_socket:
                             data_socket.close()
+                            print(
+                                "Data socket closed in finally block (forwarding with temp file).")
 
     def decentralized_handle_dele(self, client_socket, filename):
         """
@@ -1306,8 +1402,8 @@ class FTPServer:
                         filename, virtual_current_dir = self.parse_path_argument(
                             arg)
 
-                        self.decentralized_handle_stor(
-                            client_socket, data_socket, filename, virtual_current_dir, is_forwarded_request=True)
+                        self.decentralized_handle_retr(
+                            client_socket, data_socket, filename, virtual_current_dir)
                     elif cmd == "DELE":
                         self.handle_dele(client_socket, arg)
                     elif cmd == "RMD":
