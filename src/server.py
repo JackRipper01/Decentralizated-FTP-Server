@@ -82,7 +82,8 @@ class FTPServer:
         # Log it
         print(f"Node {self.node_id} initialized with self config: {self_config}")
         self.start_inactive_node_removal_thread()
-        self.who_is_next()
+        # self.who_is_next()
+        self.new_nodes_to_add=[]
 
     # region COMMS
     def clean_all_data_in_resources_dir(self):
@@ -148,10 +149,10 @@ class FTPServer:
         """Starts the listener threads."""
         threading.Thread(target=self.listen_for_hello_messages,
                          daemon=True).start()
-        threading.Thread(
-            target=self.listen_for_client_handlers, daemon=True).start()
-        threading.Thread(
-            target=self.listen_for_client_handler_turn, daemon=True).start()
+        # threading.Thread(
+        #     target=self.listen_for_client_handlers, daemon=True).start()
+        # threading.Thread(
+        #     target=self.listen_for_client_handler_turn, daemon=True).start()
         
         print(f"Node Discovery Listener threads started.")
 
@@ -341,7 +342,7 @@ class FTPServer:
             self.discovery_timer.cancel()  # Cancel the existing timer if running
 
         self.discovery_timer = threading.Timer(
-            5, self.replicate_data_to_all_nodes)  # Create a new timer
+            10, self.replicate_data_to_all_nodes)  # Create a new timer
         self.discovery_timer.start()  # Start the new timer
         print(f"Node {self.node_id}: Timer reset and started for 5 seconds.")
 
@@ -370,7 +371,7 @@ class FTPServer:
                                              hello_control_port, hello_node_id]
 
                             node_exists = False
-                            for existing_node in self.chord_nodes_config:
+                            for existing_node in self.chord_nodes_config+self.new_nodes_to_add:
                                 if existing_node[2] == hello_node_id:
                                     node_exists = True
                                     if len(existing_node) < 4:
@@ -382,11 +383,18 @@ class FTPServer:
                                     break
 
                             if not node_exists and hello_node_id != self.node_id:
+                                highest_node_id = max([node[2]
+                                                       for node in self.chord_nodes_config])
                                 new_node_info.append(time.time())
-                                self.chord_nodes_config.append(new_node_info)
+                                self.new_nodes_to_add.append(new_node_info)
                                 # self.who_is_next()
                                 # Reset and start the timer every time a new node is discovered
-                                # self.reset_discovery_timer()
+                                if self.node_id == highest_node_id:
+                                    self.reset_discovery_timer()
+                                else:
+                                    if self.discovery_timer:
+                                        self.discovery_timer.cancel()  # Cancel the existing timer if running
+
                                 # self.broadcast_file_replicas_merge()
                                 # self.broadcast_folder_replicas_merge()
                                 print(
@@ -434,7 +442,7 @@ class FTPServer:
 
         if removed_nodes:
             highest_node_id = max([node[2]
-             for node in self.chord_nodes_config])
+            for node in self.chord_nodes_config])
             
             for node in removed_nodes:
                 self.chord_nodes_config.remove(node)
@@ -444,8 +452,8 @@ class FTPServer:
                 # node_id = node[2]
                 # self.remove_node_from_file_replicas(node_id)
                 # self.remove_node_from_folder_replicas(node_id)
-            if highest_node_id not in [node[2] for node in self.chord_nodes_config]:
-                self.who_is_next()
+            # if highest_node_id not in [node[2] for node in self.chord_nodes_config]:
+            #     self.who_is_next()
             print(f"Removed inactive nodes: {removed_nodes}")
 
             print(
@@ -470,16 +478,12 @@ class FTPServer:
         - These methods should handle the actual network transfer and any necessary
         communication with the target nodes.
         """
-        # sorted_nodes = sorted(self.chord_nodes_config, key=lambda x: x[2])
-        #get the last node of sorted_nodes
-        
+        if self.new_nodes_to_add:
+            #concatenate new_nodes_to_add with chord_nodes_config
+            self.chord_nodes_config.extend(self.new_nodes_to_add)
+            self.new_nodes_to_add=[]
         print("Starting full data replication to all nodes...")
-        # get random index for sorted(self.nodes_talking_to_client, key=lambda x: x[2])
-        # random_index=random.randint(0,len(self.nodes_talking_to_client)-1)
-        # random_node=sorted(self.nodes_talking_to_client, key=lambda x: x[2])[random_index]
-        # if self.node_id!=random_node[2]:
-        #     return
-        # Identify target nodes (all nodes in chord_config EXCEPT self)
+        
         target_nodes = [
             node for node in self.chord_nodes_config if node[2] != self.node_id]
 
@@ -588,12 +592,12 @@ class FTPServer:
             ftp_client_socket.close()
             print(f"Node {self.node_id}: Folder creation RESPONSE: {response}")
             if response.startswith("123"):
-                print(
-                    f"REPLICATION OF {folder_path} TO NODE {node_id} SUCCESSFULLY.")
+                # print(
+                #     f"REPLICATION OF {folder_path} TO NODE {node_id} SUCCESSFULLY.")
                 return True
             else:
-                print(
-                    f"REPLICATION OF {folder_path} TO NODE {node_id} ERRORRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR.")
+                # print(
+                #     f"REPLICATION OF {folder_path} TO NODE {node_id} ERRORRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR.")
                 return False
         except socket.timeout:
             print(
@@ -670,16 +674,15 @@ class FTPServer:
                         BUFFER_SIZE)
                     if not data_to_forward:
                         break
-                try:
-                    ftp_data_socket_client.sendall(
-                        data_to_forward)
-                except socket.timeout:  # Timeout during sendall on data socket
-                    print(
-                        f"Node {self.node_id}: Timeout during sending data to node {node_id}.")
-                    ftp_data_socket_client.close()
-                    ftp_client_socket.close()
-                    return False
-
+                    try:
+                        ftp_data_socket_client.sendall(
+                            data_to_forward)
+                    except socket.timeout:  # Timeout during sendall on data socket
+                        print(
+                            f"Node {self.node_id}: Timeout during sending data to node {node_id}.")
+                        ftp_data_socket_client.close()
+                        ftp_client_socket.close()
+                        return False
             ftp_data_socket_client.close()
 
             try:
@@ -1026,6 +1029,8 @@ class FTPServer:
                     else:
                         print(
                             f"FORWARD_DELE to node {target_id} failed with response: {response}")
+                    if forward_socket:
+                        forward_socket.close()
                 except Exception as e:
                     print(f"Error forwarding DELE to node {target_id}: {e}")
                 finally:
