@@ -45,17 +45,20 @@ class FTPServer:
         self.resources_dir = base_dir.joinpath(
             f'./server_resources_node_{node_id}')  # Unique resources dir per node
 
+        self.node_id = node_id  # Unique ID for this Chord node
+        self.am_i_bradcsting_redist_turn=False
         if not self.resources_dir.exists():
             self.resources_dir.mkdir()
             print(f"Created directory: {self.resources_dir}")
         else:
             print(f"Directory already exists: {self.resources_dir}")
+            if self.node_id!=1:
+                self.clean_all_data_in_resources_dir()
         self.current_dir = self.resources_dir
         print(self.current_dir)
 
         self.discovery_timer = None  # To hold the timer object
 
-        self.node_id = node_id  # Unique ID for this Chord node
         self.chord_nodes_config = []  # Initialize as empty list
         self_config = [self.host, CONTROL_PORT,
                        self.node_id, time.time()]  # timestamp
@@ -64,12 +67,12 @@ class FTPServer:
         
         self.chord_nodes_config.append(self_config)
         # Dictionary to track folder replicas: {Key: Full Path of Folder , Value: [node_id1, node_id2, node_id3]}
-        self.folder_replicas = {}
+        # self.folder_replicas = {}
         self.start_listeners()
         self.start_node_discovery_broadcast()
 
         # Dictionary to track file replicas: {Key: Full Path of File including filename , Value: [node_id1, node_id2, node_id3]}
-        self.file_replicas = {}
+        # self.file_replicas = {}
         # Broadcast the updated file_replicas to other nodes
         # self.broadcast_file_replicas_merge()
 
@@ -79,12 +82,24 @@ class FTPServer:
         # Log it
         print(f"Node {self.node_id} initialized with self config: {self_config}")
         self.start_inactive_node_removal_thread()
-        # self.start_redistribute_replicas_interment()
-        # self.start_update_file_replicas_permanent_thread()
-        # self.start_update_folder_replicas_permanent_thread()
+        self.who_is_next()
 
     # region COMMS
-    
+    def clean_all_data_in_resources_dir(self):
+        """
+        Cleans the resources directory by deleting all files and folders.
+        """
+        for root, dirs, files in os.walk(self.resources_dir, topdown=False):
+            for file in files:
+                os.remove(os.path.join(root, file))
+            for dir in dirs:
+                dir_path = os.path.join(root, dir)
+                try:
+                    os.rmdir(dir_path)
+                except OSError as e:
+                    # Optional error handling
+                    print(f"Error removing directory {dir_path}: {e}")
+
     def parse_node_config_string(self, config_str):
         """Parses the comma-separated node config string."""
         if not config_str:
@@ -120,18 +135,6 @@ class FTPServer:
             target=self.broadcast_hello_client_handler_message, daemon=True)
         thread.start()
         print(f"Node Discovery Broadcast thread started.")
-    
-    # def start_redistribute_replicas_interment(self):
-    #     thread = threading.Thread(
-    #         target=self.redistribute_replicas_interment, daemon=True)
-    #     thread.start()
-
-    # def redistribute_replicas_interment(self):
-    #     """Starts the node discovery broadcast thread."""
-    #     while True:
-    #         if not self.discovery_timer:
-    #             self.reset_discovery_timer()
-    #         time.sleep(REDISTRIBUTION_INTERVAL)
 
     def start_inactive_node_removal_thread(self):
         """Starts the inactive node removal loop in a separate thread."""
@@ -185,9 +188,12 @@ class FTPServer:
         server_address = ('<broadcast>', CLIENT_HANDLERS_TURN_PORT)
         counter=0
         while True:
-            time.sleep(10)  # Broadcast every N seconds
+            time.sleep(REDISTRIBUTION_INTERVAL)  # Broadcast every N seconds
             # only the node with the highest id will broadcast this message
-            
+            highest_node_id = max([node[2]
+                                  for node in self.chord_nodes_config])
+            if highest_node_id != self.node_id:
+                return
             if counter>=len(self.chord_nodes_config):
                 counter=0
             is_turn_of_node_id = self.chord_nodes_config[counter][2]
@@ -196,11 +202,11 @@ class FTPServer:
                 sent = broadcast_socket.sendto(
                     message.encode(), server_address)
                 counter+=1
-                # print(
-                #     f"Node {self.node_id} broadcasted hello message: '{message}'")
+                
             except Exception as e:
                 print(
                     f"Error broadcasting TURN message from Node {self.node_id}: {e}")
+                
     def start_broadcast_client_handler_turn(self):
         thread = threading.Thread(
             target=self.broadcast_client_handler_turn, daemon=True)
@@ -209,7 +215,8 @@ class FTPServer:
     def who_is_next(self):
             highest_node_id = max([node[2]
                                   for node in self.chord_nodes_config])
-            if self.node_id == highest_node_id:
+            if self.node_id == highest_node_id and not self.am_i_bradcsting_redist_turn:
+                self.am_i_bradcsting_redist_turn=True
                 self.start_broadcast_client_handler_turn()
             
             
@@ -302,10 +309,10 @@ class FTPServer:
                             if not node_exists and hello_node_id != self.node_id:
                                 new_node_info.append(time.time())
                                 self.start_replicate_thread()
-                                time.sleep(5)
+                                # time.sleep(5)
                                 self.nodes_talking_to_client.append(
                                     new_node_info)
-                                # Reset and start the timer every time a new node is discovered
+                                
                                 
                                 print(
                                     f"Node {self.node_id} discovered new client handler: {new_node_info}")
@@ -377,7 +384,7 @@ class FTPServer:
                             if not node_exists and hello_node_id != self.node_id:
                                 new_node_info.append(time.time())
                                 self.chord_nodes_config.append(new_node_info)
-                                self.who_is_next()
+                                # self.who_is_next()
                                 # Reset and start the timer every time a new node is discovered
                                 # self.reset_discovery_timer()
                                 # self.broadcast_file_replicas_merge()
@@ -426,6 +433,9 @@ class FTPServer:
                 removed_nodes.append(node_info)
 
         if removed_nodes:
+            highest_node_id = max([node[2]
+             for node in self.chord_nodes_config])
+            
             for node in removed_nodes:
                 self.chord_nodes_config.remove(node)
                 if node in self.nodes_talking_to_client:
@@ -434,7 +444,8 @@ class FTPServer:
                 # node_id = node[2]
                 # self.remove_node_from_file_replicas(node_id)
                 # self.remove_node_from_folder_replicas(node_id)
-            self.who_is_next()
+            if highest_node_id not in [node[2] for node in self.chord_nodes_config]:
+                self.who_is_next()
             print(f"Removed inactive nodes: {removed_nodes}")
 
             print(
@@ -483,39 +494,43 @@ class FTPServer:
         for root, directories, files in os.walk(self.resources_dir):
             relative_root = os.path.relpath(
                 root, self.resources_dir) if root != self.resources_dir else ""  # Handle root directory
-
+            # skip TEMP_DOWNLOAD_DIR_NAME directory
+            if relative_root == TEMP_DOWNLOAD_DIR_NAME:
+                continue
             for directory in directories:
                 relative_folder_path = os.path.join(relative_root, directory)
-                print(f"Replicating folder: '{relative_folder_path}'")
+                # print(f"Replicating folder: '{relative_folder_path}'")
 
                 for target_node_info in target_nodes:
                     target_node_id = target_node_info[2]
-                    print(f"  -> to node {target_node_id}...")
+                    # print(f"  -> to node {target_node_id}...")
                     try:
                         if not self.create_folder_on_node(relative_folder_path, target_node_info):
                             print(
                                 f"  Failed to create folder '{relative_folder_path}' on node {target_node_id}.")
                         else:
-                            print(
-                                f"  Folder '{relative_folder_path}' created on node {target_node_id} successfully.")
+                            a=1
+                            # print(
+                                # f"  Folder '{relative_folder_path}' created on node {target_node_id} successfully.")
                     except Exception as e:
                         print(
                             f"  Error replicating folder '{relative_folder_path}' to node {target_node_id}: {e}")
 
             for filename in files:
                 relative_file_path = os.path.join(relative_root, filename)
-                print(f"Replicating file: '{relative_file_path}'")
+                # print(f"Replicating file: '{relative_file_path}'")
 
                 for target_node_info in target_nodes:
                     target_node_id = target_node_info[2]
-                    print(f"  -> to node {target_node_id}...")
+                    # print(f"  -> to node {target_node_id}...")
                     try:
                         if not self.copy_file_to_node(relative_file_path, target_node_info):
                             print(
                                 f"  Failed to copy file '{relative_file_path}' to node {target_node_id}.")
                         else:
-                            print(
-                                f"  File '{relative_file_path}' copied to node {target_node_id} successfully.")
+                            a=1
+                            # print(
+                            #     f"  File '{relative_file_path}' copied to node {target_node_id} successfully.")
                     except Exception as e:
                         print(
                             f"  Error replicating file '{relative_file_path}' to node {target_node_id}: {e}")
@@ -602,9 +617,9 @@ class FTPServer:
     def receive_folder_creation_order(self, client_socket, data_socket, folder_path):
         final_folder_path = os.path.join(
             self.resources_dir, folder_path)
-        if not os.path.exists(os.path.dirname(final_folder_path)):
+        if not os.path.exists(final_folder_path):
             try:
-                os.makedirs(os.path.dirname(final_folder_path))
+                os.makedirs(final_folder_path)
                 client_socket.send(b"123 Folder created successfully.\r\n")
             except OSError as exc:
                 print(f"Error creating directory: {exc}")
@@ -861,8 +876,8 @@ class FTPServer:
                     if addr[0].startswith("10.0.10.") and not talking_to_real_client:
                         talking_to_real_client=True
                         self.nodes_talking_to_client.append([self.host, CONTROL_PORT, self.node_id, time.time()])
-                        self.start_node_client_handler_broadcast()
-                                
+                        # self.start_node_client_handler_broadcast()
+                    
                     command = client_socket.recv(BUFFER_SIZE).decode().strip()
                     if not command:
                         break
