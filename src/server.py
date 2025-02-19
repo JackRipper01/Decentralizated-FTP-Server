@@ -52,8 +52,8 @@ class FTPServer:
             print(f"Created directory: {self.resources_dir}")
         else:
             print(f"Directory already exists: {self.resources_dir}")
-            if self.node_id!=1:
-                self.clean_all_data_in_resources_dir()
+            # if self.node_id!=1:
+            self.clean_all_data_in_resources_dir()
         self.current_dir = self.resources_dir
         print(self.current_dir)
 
@@ -394,6 +394,7 @@ class FTPServer:
                                 else:
                                     if self.discovery_timer:
                                         self.discovery_timer.cancel()  # Cancel the existing timer if running
+                                    self.chord_nodes_config.extend(self.new_nodes_to_add)
 
                                 # self.broadcast_file_replicas_merge()
                                 # self.broadcast_folder_replicas_merge()
