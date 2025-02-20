@@ -423,7 +423,85 @@ class FTPServer:
         while True:
             time.sleep(INACTIVE_NODE_TIMEOUT)  # Wait for timeout period
             self.remove_inactive_nodes()
+    def get_key(self, filename):
+        """
+        Generates a Chord key for a given filename using SHA1 hash.
+        """
+        return int(hashlib.sha1(filename.encode()).hexdigest(), 16) % 2048
 
+    def find_successors(self, key, nodes_config, num_successors=3):
+        """
+        Finds a list of successor nodes for a given key in the Chord ring,
+        including the node itself and the next ones in the ring.
+        Ensures no duplicate nodes are returned in the list.
+
+        Args:
+            key (int): The key to find successors for.
+            nodes_config (list): List of node configurations.
+            num_successors (int): The number of successors to return (default is 3).
+
+        Returns:
+            list: A list of unique node info lists, representing the successors.
+                  The list will contain at most num_successors unique nodes,
+                  and might be shorter if there are fewer unique nodes in the ring.
+        """
+        ring_size = 1024  # Same as key space
+        # Sort nodes by node_id
+        sorted_nodes = sorted(nodes_config, key=lambda node_info: node_info[2])
+        if not sorted_nodes:
+            # If no other nodes, current node is the only one (return self num_successors times - but only unique once)
+            # Return only self once as it's the only unique node
+            return [[self.host, CONTROL_PORT, self.node_id]]
+
+        primary_successor = None
+        successor_index = -1  # Keep track of the index of the primary successor
+
+        for i in range(len(sorted_nodes)):
+            current_node_info = sorted_nodes[i]
+            next_index = (i + 1) % len(sorted_nodes)
+            next_node_info = sorted_nodes[next_index]
+
+            current_node_id = current_node_info[2]
+            next_node_id = next_node_info[2]
+
+            if current_node_id < next_node_id:  # Normal case, ring not wrapped around
+                if current_node_id < key <= next_node_id:
+                    primary_successor = next_node_info
+                    successor_index = next_index
+                    break
+            # Ring wrapped around, e.g., node IDs are [800, 900, 100, 200]
+            else:
+                if key > current_node_id or key <= next_node_id:  # Key is in the wrap-around range
+                    primary_successor = next_node_info
+                    successor_index = next_index
+                    break
+
+        if not primary_successor:
+            # If key is smaller than the smallest node ID, the first node in the ring is the successor
+            primary_successor = sorted_nodes[0]
+            successor_index = 0
+
+        successors_list = []
+        added_node_ids = set()  # Keep track of added node IDs to avoid duplicates
+
+        # Add the primary successor if it's not already added
+        if primary_successor[2] not in added_node_ids:
+            successors_list.append(primary_successor)
+            added_node_ids.add(primary_successor[2])
+
+        # Add the next num_successors - 1 successors, ensuring no duplicates
+        for i in range(1, num_successors):
+            if len(successors_list) >= len(sorted_nodes):  # Stop if we've added all unique nodes
+                break
+            next_successor_index = (successor_index + i) % len(sorted_nodes)
+            next_successor = sorted_nodes[next_successor_index]
+            # Check for duplicates before adding
+            if next_successor[2] not in added_node_ids:
+                successors_list.append(next_successor)
+                added_node_ids.add(next_successor[2])
+
+        return successors_list
+    
     def remove_inactive_nodes(self):
         """Removes inactive nodes from chord_nodes_config based on last hello message time."""
         # print("Checking for inactive nodes...")
